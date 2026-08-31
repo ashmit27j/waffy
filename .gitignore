@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+#agents
+prompts/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing & linting
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets, TLS certificates, keys
+*.pem
+*.key
+*.crt
+*.csr
+*.pfx
+*.p12
+secrets/
+.env*
+!.env.example
+
+# Logs and runtime sockets
+*.log
+logs/
+*.sock
+
+# Model artifacts / baseline data
+*.joblib
+*.pkl
+models/*.bin
+models/*.joblib

@@ -1,0 +1,93 @@
+# waffy Implementation Progress
+
+Tracking implementation status across phases with strict labeling honesty (`Implemented` / `Tested` / `Mocked` / `Environment-dependent` / `Not yet validated`).
+
+## Phase Summary
+
+| Phase | Description | Status | Details |
+|---|---|---|---|
+| **0** | `CLAUDE.md` persistent contract | **DONE** | Tested & verified at root |
+| **1** | Frozen `docs/MASTER_SPEC.md` | **DONE** | Created & frozen |
+| **2 (Phase 01)** | Foundation, domain models, config, interfaces | **DONE** | All models, enums, exceptions, protocols, fakes, tests pass (`pyright --strict`, `ruff`, `pytest`) |
+| **3 (Phase 02)** | HTTP engine, parsing, normalization, anti-evasion | **DONE** | Smuggling checks, decompression bomb guard, safe XML XXE parser, multi-pass anti-evasion, ASGI proxy application |
+| **4 (Phase 03)** | Detection: signature engine, positive security | **DONE** | Seed signature set across all categories, paranoia-level filtering, execution time budget guard, route positive security engine, 0% benign corpus false-positive rate |
+| **5 (Phase 04)** | ML / anomaly scoring layer | **DONE** | Canonical feature extraction (v1 schema), offline Isolation Forest baseline builder with minimum sample enforcement, fault-tolerant runtime anomaly scorer (evidence only) |
+| **6 (Phase 05)** | Scoring & decision engine, enforcement, validation chain | **DONE** | Additive scoring engine, mode-aware decision engine with evidence-maturity invariant, single-point enforcement executor, 9-stage validation chain, allowlist manager, kill-switch |
+| **7 (Phase 06)** | Rate limiting, DoS, bot detection, session/CSRF | **DONE** | All implemented & tested ✓ |
+| **8 (Phase 07)** | Deployment proxy modes, ASGI middleware, IPC | **DONE** | All deliverables implemented & tested ✓ |
+| **9 (Phase 08)** | Management API, control panel, SIEM/metrics | Pending | |
+| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | Pending | |
+| **11 (Phase 10)** | Release polish, interoperability documentation | Pending | |
+
+---
+
+## Detailed Deliverables by Phase
+
+### Phase 1 (02-phase-01-foundation.md) — Foundation
+- **Repo scaffolding & pyproject.toml**: **Tested** (Python 3.12+, uv-managed, hatchling build, strict pyright, ruff, pytest)
+- **`config/default_config.toml`**: **Tested** (Complete section coverage per spec §24, default SHADOW mode & fail_open)
+- **`waffy/config/`**: **Tested** (Pydantic v2 settings models, TOML loader with validation and typed exceptions)
+- **`waffy/core/enums.py`**: **Tested** (ThreatLevel, EnforcementAction, EnforcementMode, FailureMode, RuleStatus, SignatureCategory, ParanoiaLevel, HttpMethod, SecurityEventType, EventSeverity, TargetField)
+- **`waffy/core/exceptions.py`**: **Tested** (WaffyError base and 10 typed subclasses with behavior docstrings)
+- **`waffy/core/models/domain.py`**: **Tested** (Pydantic v2 domain models for all spec §6 entities with strict validators)
+- **`waffy/core/interfaces.py`**: **Tested** (Protocols for UpstreamClient, RuleStore, CertificateProvider, ChallengeVerifier, EventSink)
+- **`tests/helpers/fakes.py`**: **Tested** (In-memory Fake implementations for all 5 protocols)
+- **`docs/CODING_STANDARDS.md`**: **Implemented** (Captured persistent CLAUDE.md rules and architectural constraints)
+- **Phase 1 Test Suite (`tests/unit/test_foundation.py`)**: **Tested** (7/7 tests passing, clean `pyright` strict mode, clean `ruff check`)
+
+### Phase 2 (03-phase-02-http-engine.md) — HTTP Engine, Parsing & Normalization
+- **`waffy/http/normalize.py`**: **Tested** (Multi-pass percent decoding, '+' space normalization, NFKC unicode normalization, path traversal resolution without mutating routed paths, null byte stripping)
+- **`waffy/http/body.py`**: **Tested** (Content-type aware body parsing for JSON, Form-urlencoded, Multipart/form-data metadata, XXE-safe XML parsing with external entity resolution unconditionally disabled, decompression bomb ratio/size guards)
+- **`waffy/http/parser.py`**: **Tested** (Ambiguity & smuggling rejection: CL/TE conflicts, duplicate conflicting CL headers, chunked framing validation, header size/count bounds, request line limits)
+- **`waffy/http/upstream.py`**: **Implemented** (Real `httpx.AsyncClient`-based `HttpxUpstreamClient` forwarding requests with hop-by-hop header filtering)
+- **`waffy/http/transport.py`**: **Tested** (Starlette/ASGI `ProxyApplication` accepting requests, enforcing malformed request rejection even in SHADOW mode, and forwarding via `UpstreamClient`)
+- **HTTP/2 Support Status**: **Not yet validated** (ASGI server level HTTP/2 capability depends on uvicorn/hypercorn deployment profile; HTTP/1.1 fully implemented and tested)
+- **Phase 2 Test Suite (`tests/unit/test_http_engine.py`)**: **Tested** (Table-driven anti-evasion, desync ambiguity rejection, decompression bomb fixtures, safe XML parsing, multipart metadata extraction, end-to-end ASGI proxy flow)
+
+### Phase 3 (04-phase-03-detection-rule-engine.md) — Detection: Signature Engine & Positive Security
+- **`waffy/detection/signatures/schema.py`**: **Tested** (Pydantic v2 signature definition schema, TOML rule loader with duplicate ID detection and `RuleLoadError`)
+- **`waffy/detection/signatures/engine.py`**: **Tested** (Multi-target signature matcher across path/query/headers/cookies/body, paranoia-level filtering, per-request matching time budget guard aborting slow checks without halting request pipeline)
+- **`config/rules/seed_rules.toml`**: **Tested** (Seed rule set covering SQLi, XSS, Command Injection, Path Traversal, LFI/RFI, SSTI, XXE, Deserialization, CRLF Injection, Open Redirect, and Known Scanner Fingerprints)
+- **`waffy/detection/positive/`**: **Tested** (Per-route security model with allowed methods, content types, parameter constraints [type, min/max length, regex], unknown-parameter policy, clean fallback for unconfigured routes)
+- **`config/routes/example_routes.toml`**: **Implemented** (Sample positive security route specifications)
+- **Benign Traffic False-Positive Rate**: **Tested** (0.0% false-positive rate on synthetic benign traffic corpus against Paranoia Level 1 rules)
+- **Phase 3 Test Suite (`tests/unit/test_detection_engine.py`)**: **Tested** (True positive and true negative tests for all categories, budget limit test, paranoia-level filtering, positive security validator)
+
+### Phase 4 (05-phase-04-ml-anomaly.md) — ML / Anomaly Scoring Layer (Evidence Only)
+- **`waffy/detection/anomaly/features.py`**: **Tested** (Single canonical feature extractor computing 12 numerical features: length, param count, max param length, max Shannon entropy, path depth, header count, unusual header presence, character ratios, and encoding layers)
+- **`waffy/detection/anomaly/baseline.py`**: **Tested** (Isolation Forest baseline trainer enforcing minimum sample count threshold [below threshold -> fallback to signature-only], exporting joblib model and ModelMetadata)
+- **`waffy/detection/anomaly/scorer.py`**: **Tested** (Fault-tolerant runtime scorer producing normalized `AnomalyEvidence` without mutating blocklists or issuing enforcement commands; degrades safely on missing/corrupt model files)
+- **Production Validation**: **Tested on synthetic corpus; not yet validated against real per-route production traffic** (honesty rule label)
+- **Phase 4 Test Suite (`tests/unit/test_ml_anomaly.py`)**: **Tested** (Deterministic feature extraction, Shannon entropy verification, min sample threshold fallback, model training and score differentiation, corrupted artifact degradation)
+
+### Phase 5 (06-phase-05-decision-enforcement.md) — Scoring, Decision & Enforcement
+- **`waffy/engine/scoring.py`**: **Tested** (Config-driven additive scoring across signatures, positive security violations, ML anomaly, bot, and rate limits mapping to ThreatLevel)
+- **`waffy/engine/decision.py`**: **Tested** (Mode-aware decision table implementing the **Evidence-Maturity Invariant**: single weak signals are downgraded to CHALLENGE and never BLOCK without high-confidence low-FP category match, multiple corroborating categories, or recurring source readings tracked via bounded LRU `ConsistencyTracker`)
+- **`waffy/enforcement/actions.py`**: **Tested** (The single authorized execution point: ALLOW, LOG, RATE_LIMIT [429 + Retry-After], BLOCK [403 non-leaking generic response], CHALLENGE [verification delegator])
+- **`waffy/enforcement/validation.py`**: **Tested** (9-stage persistent action validation chain: schema -> network validity -> allowlist -> safety [management CIDRs, localhost, /24 IPv4 and /64 IPv6 width limits] -> conflict -> duplicate -> sliding-window rate-cap -> expiration -> authorization)
+- **`waffy/enforcement/allowlist.py`**: **Tested** (Static/dynamic allowlist manager with unconditional decision override)
+- **`waffy/enforcement/killswitch.py`**: **Tested** (Emergency kill-switch setting mode to SHADOW, revoking all active bans, preserving allowlists, and logging audit events)
+- **`waffy/http/pipeline.py`**: **Tested** (Full inline pipeline application orchestrating parse -> detect -> score -> decide -> enforce end-to-end)
+- **Shipped Default Enforcement Mode**: **SHADOW mode / fail_open default** (`ACTIVE` mode capability tested locally, not yet validated against real production traffic)
+- **Phase 5 Test Suite (`tests/unit/test_decision_enforcement.py`)**: **Tested** (Additive scoring, evidence maturity both directions, mode branching, validation chain rejection stages, allowlist override, kill-switch engagement, and full end-to-end ACTIVE vs SHADOW pipeline flow)
+
+### Phase 6 (07-phase-06-session-bot-ratelimit.md) — Rate Limiting, Bot Detection, Session/Cookie Security
+- **`waffy/detection/ratelimit/engine.py`**: **Tested** (Bounded sliding-window limiters for IP, session, route, and global scopes; LRU eviction for bounded memory; produces `RateLimitState` evidence only)
+- **`waffy/detection/bot/engine.py`**: **Tested** (Multi-signal bot heuristics: scanner UA, honeypot endpoint trap, timing regularity tracker, JA3 placeholder)
+- **`waffy/detection/session/services.py`**: **Tested** (Cookie attribute rewriter for Secure/HttpOnly/SameSite enforcement; HMAC-signed CSRF token generation/verification; credential stuffing velocity detector)
+- **`waffy/http/limits.py`**: **Tested** (Transport resource protection: max in-flight requests, per-IP concurrency, slowloris/slow-POST minimum upload rate guard, idle timeout)
+- **Config models**: **Tested** (`RateLimitConfig`, `BotDetectionConfig`, `CookieSecurityConfig`, `CredentialStuffingConfig`, `HttpLimitsConfig` all added to `WaffyConfig`)
+- **Decision engine update**: **Tested** (Rate-limit tripped state maps directly to `RATE_LIMIT` enforcement action — 429 + Retry-After)
+- **Phase 6 Test Suite (`tests/unit/test_session_bot_ratelimit.py`)**: **Tested** (8/8 tests passing — sliding window window-reset, multi-scope rate limiting, bot heuristics, cookie rewriting, CSRF token, credential stuffing, transport limits, full pipeline 429 flow)
+
+### Phase 7 (08-phase-07-deployment-proxy-modes.md) — Deployment Proxy Modes, ASGI Middleware, IPC
+- **`waffy/proxy/standalone.py`**: **Implemented** (`FileCertificateProvider` loads cert/key from disk; `build_ssl_context` builds TLSv1.2+ context; ACME is explicitly documented as stretch goal; real TLS handshake test is **Environment-dependent** — requires a locally-generated cert and localhost port binding)
+- **`waffy/proxy/plaintext.py`**: **Tested** (`PlaintextProxyServer` delegates to shared pipeline; TLS-derived signals absent but gracefully neutral; test confirms no crash with absent JA3 data)
+- **`waffy/middleware/asgi.py`**: **Tested** (`WaffyMiddleware` wraps any ASGI app; blocked requests never reach wrapped app; allowed requests are passed through; shared-pipeline test proves no duplicate detection logic; trade-offs explicitly documented — Python-only, no process isolation)
+- **`waffy/ipc/protocol.py`**: **Tested** (Pydantic v2 typed NDJSON schema covering 13 IPC commands; `parse_ipc_request` dispatcher; versioned with `PROTOCOL_VERSION="1.0"`)
+- **`waffy/ipc/server.py`**: **Tested** (Unix domain socket server with 0o600 permissions; full command dispatch; ring-buffer `IpcStateStore`; protocol version mismatch rejection; graceful client handling)
+- **`waffy/runtime/core_daemon.py`**: **Tested** (Ordered startup: IPC → proxy → readiness; `sd_notify READY=1` hook; graceful drain with timeout; in-flight counter; stage-order assertions in integration tests)
+- **`docs/DEPLOYMENT.md`**: **Implemented** (Concrete example configs for all three modes; fail-open/fail-closed trade-off stated prominently; TLS signal degradation table for plaintext mode; IPC socket permission guidance)
+- **IPC socket permission bits**: **Tested** (0o600 assertion passes; multi-OS-user rejection is documented as environment-dependent — relies on POSIX `connect(2)` enforcement which is kernel-tested)
+- **Real TLS handshake test**: **Environment-dependent** (Requires self-signed cert generation + localhost port binding; documented in `test_standalone_tls_environment_note`)
+- **Phase 7 Integration Test Suite (`tests/integration/test_phase7_deployment.py`)**: **Tested** (14/14 tests passing — plaintext mode, middleware block/allow, shared-pipeline proof, IPC socket permissions, IPC read/write/mode, protocol version mismatch, startup stage order, graceful drain, FileCertificateProvider unit tests)

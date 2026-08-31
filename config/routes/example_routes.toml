@@ -1,0 +1,40 @@
+# Example Positive Security Route Definitions
+
+[[routes]]
+route_id = "user_api_route"
+path_pattern = "^/api/v1/users"
+allowed_methods = ["GET", "POST"]
+allowed_content_types = ["application/json"]
+unknown_param_policy = "flag"
+
+[[routes.parameters]]
+name = "user_id"
+param_type = "int"
+required = false
+max_length = 10
+
+[[routes.parameters]]
+name = "email"
+param_type = "string"
+required = false
+max_length = 100
+regex_pattern = "^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+$"
+
+[[routes]]
+route_id = "login_route"
+path_pattern = "^/login"
+allowed_methods = ["POST"]
+allowed_content_types = ["application/x-www-form-urlencoded", "application/json"]
+unknown_param_policy = "reject"
+
+[[routes.parameters]]
+name = "username"
+param_type = "string"
+required = true
+max_length = 50
+
+[[routes.parameters]]
+name = "password"
+param_type = "string"
+required = true
+max_length = 128

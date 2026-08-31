@@ -1,0 +1,51 @@
+[
+  {
+    "method": "GET",
+    "path": "/",
+    "query": "",
+    "headers": [["user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"]],
+    "body": ""
+  },
+  {
+    "method": "GET",
+    "path": "/products",
+    "query": "category=electronics&sort=asc&page=2",
+    "headers": [["user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"]],
+    "body": ""
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/search",
+    "query": "",
+    "headers": [["content-type", "application/json"], ["user-agent", "Mozilla/5.0"]],
+    "body": "{\"query\": \"organic apples\", \"limit\": 20}"
+  },
+  {
+    "method": "POST",
+    "path": "/contact",
+    "query": "",
+    "headers": [["content-type", "application/x-www-form-urlencoded"]],
+    "body": "name=John+Doe&email=john%40example.com&message=Hello+I+would+like+to+select+a+product"
+  },
+  {
+    "method": "GET",
+    "path": "/articles/history-of-computing",
+    "query": "ref=newsletter",
+    "headers": [["user-agent", "Mozilla/5.0"]],
+    "body": ""
+  },
+  {
+    "method": "GET",
+    "path": "/images/logo.png",
+    "query": "v=1.2.3",
+    "headers": [["accept", "image/png"]],
+    "body": ""
+  },
+  {
+    "method": "POST",
+    "path": "/checkout",
+    "query": "",
+    "headers": [["content-type", "application/json"]],
+    "body": "{\"cart_id\": 1045, \"coupon\": \"SUMMER2026\", \"items\": [{\"id\": 1, \"qty\": 2}]}"
+  }
+]

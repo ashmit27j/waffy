@@ -1,0 +1,134 @@
+# Seed Signature Rules for waffy
+# Paranoia Level 1: High confidence, low false-positive baseline
+
+[[rules]]
+id = "WAFFY-SQLI-001"
+category = "sqli"
+pattern = '''(?i)\b(union\s+(all\s+)?select|select\s+([*]|null|\d+|[\w`'"]+\s*,|concat\(|version\(\)|user\(\)|schema\(\)|count\()\s+.*\s+from\s+[\w\.]+|insert\s+into\s+.*\s+values|delete\s+from\s+[\w\.]+|drop\s+(table|database))\b'''
+paranoia_level = 1
+target_fields = ["query_params", "body_fields", "raw_body", "path"]
+score_weight = 40.0
+description = "SQL Injection - Standard UNION / SELECT / DDL statement patterns"
+references = ["CWE-89", "OWASP-A03"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-SQLI-002"
+category = "sqli"
+pattern = '''(?i)(\b(or|and)\b\s+['"]?\w+['"]?\s*=\s*['"]?\w+['"]?\s*(--|#|/\*))|(\b(sleep|benchmark|waitfor\s+delay|pg_sleep)\s*\()'''
+paranoia_level = 1
+target_fields = ["query_params", "body_fields", "raw_body", "cookies"]
+score_weight = 40.0
+description = "SQL Injection - Boolean blind, time-based delays, and comment truncation"
+references = ["CWE-89"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-XSS-001"
+category = "xss"
+pattern = '''(?i)(<\s*script[^>]*>.*<\s*/\s*script\s*>)|(<\s*img[^>]+src\s*=\s*['"]?javascript:)|(\bonerror\s*=\s*['"]?[^>'"]+)|(\bonload\s*=\s*['"]?[^>'"]+)'''
+paranoia_level = 1
+target_fields = ["query_params", "body_fields", "raw_body", "path"]
+score_weight = 10.0
+description = "XSS - Script tags, javascript: pseudo-protocol, and dangerous inline event handlers"
+references = ["CWE-79", "OWASP-A03"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-CMDI-001"
+category = "command_injection"
+pattern = '''(?i)(;\s*(cat|ls|whoami|id|uname|curl|wget|bash|sh|nc|netcat|powershell|cmd\.exe)\b)|(\|\s*(cat|ls|whoami|id|uname|curl|wget|bash|sh|nc|netcat|powershell|cmd\.exe)\b)|(`[^`]+`)|(\$\([^)]+\))'''
+paranoia_level = 1
+target_fields = ["query_params", "body_fields", "raw_body", "path"]
+score_weight = 15.0
+description = "Command Injection - Shell metacharacters piped or chained to system binaries"
+references = ["CWE-78", "OWASP-A03"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-TRAVERSAL-001"
+category = "path_traversal"
+pattern = '''(?i)(\.\./|\.\.\\|/etc/(passwd|shadow|hosts)|c:\\boot\.ini|c:\\windows\\system32)'''
+paranoia_level = 1
+target_fields = ["path", "query_params", "body_fields"]
+score_weight = 10.0
+description = "Path Traversal & Sensitive File Disclosure (Unix/Windows)"
+references = ["CWE-22", "CWE-23"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-LFIRFI-001"
+category = "lfi_rfi"
+pattern = '''(?i)(php://(input|filter)|data://text/plain|expect://|file://|https?://[^\s]+\.php\b)'''
+paranoia_level = 1
+target_fields = ["query_params", "body_fields", "path"]
+score_weight = 10.0
+description = "LFI/RFI - PHP stream wrappers and remote include vectors"
+references = ["CWE-98"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-SSTI-001"
+category = "ssti"
+pattern = '''(\{\{\s*(\d+\s*[\*\+\-]\s*\d+|config|self|request|g|lipsum|cycler|joiner|namespace|__class__|__mro__|__subclasses__)\s*\}\})|(\$\{.*(\d+[\*\+]\d+|Runtime|exec)\})'''
+paranoia_level = 1
+target_fields = ["query_params", "body_fields", "raw_body"]
+score_weight = 10.0
+description = "SSTI - Template injection patterns across Jinja2/Twig/Freemarker"
+references = ["CWE-1336"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-XXE-001"
+category = "xxe"
+pattern = '''(?i)(<!ENTITY\s+[\w\-]+\s+(SYSTEM|PUBLIC)\s+['"][^'"]+['"]>)|(<!DOCTYPE\s+[^>]+\[)'''
+paranoia_level = 1
+target_fields = ["raw_body", "body_fields"]
+score_weight = 5.0
+description = "XXE - External entity declaration markers (secondary signal)"
+references = ["CWE-611"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-DESER-001"
+category = "deserialization"
+pattern = '''(?i)(rO0AB[A-Za-z0-9+/=]+)|(cos\s*\nsystem\s*\n)|(K\x00\x00\x00)|(O:\d+:\"[^\"]+\":\d+:\{)'''
+paranoia_level = 1
+target_fields = ["raw_body", "body_fields", "cookies", "headers"]
+score_weight = 15.0
+description = "Insecure Deserialization - Java/PHP/Python magic bytes and serialized gadget markers"
+references = ["CWE-502"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-CRLF-001"
+category = "crlf_injection"
+pattern = '''(%0d%0a|\r\n)(set-cookie|location|content-type|x-):'''
+paranoia_level = 1
+target_fields = ["query_params", "path", "headers"]
+score_weight = 10.0
+description = "CRLF Injection - HTTP response splitting & header injection"
+references = ["CWE-113"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-REDIRECT-001"
+category = "open_redirect"
+pattern = '''(?i)(https?://[^\s/$.?#].[^\s]*|//[^\s/$.?#].[^\s]*)'''
+paranoia_level = 2
+target_fields = ["query_params"]
+score_weight = 5.0
+description = "Open Redirect - Target parameters containing absolute external URLs (PL2)"
+references = ["CWE-601"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-SCANNER-001"
+category = "scanner_fingerprint"
+pattern = '''(?i)\b(sqlmap|nikto|nuclei|w3af|acunetix|nessus|openvas|gobuster|dirbuster|metasploit|zaproxy|nmap)\b'''
+paranoia_level = 1
+target_fields = ["headers"]
+score_weight = 5.0
+description = "Known Scanner & Reconnaissance Tool User-Agents"
+references = ["WASC-14"]
+enabled = true
