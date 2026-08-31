@@ -1,6 +1,6 @@
 # waffy
 
-![waffy](Waff-banner.png)
+![waffy](Waffy-banner.png)
 
 A standalone, per-host application-layer Web Application Firewall (WAF). It
 sits inline with decrypted HTTP(S) traffic on an individual machine to inspect
