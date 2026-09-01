@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Pending Approval — waffy{% endblock %}
+{% block content %}
+<h1 class="page-title">Pending Approval Queue</h1>
+<p class="page-desc">These bans were raised by waffy-core but require operator approval before becoming active.</p>
+
+{% if pending %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Target</th>
+      <th>Reason</th>
+      <th>Created</th>
+      <th>Approve</th>
+      <th>Reject</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for b in pending %}
+    <tr>
+      <td class="mono small">{{ b.get('id', '')[:8] }}…</td>
+      <td class="mono"><strong>{{ b.get('target', '') }}</strong></td>
+      <td>{{ b.get('reason', '') }}</td>
+      <td class="mono">{{ b.get('created_at', '')[:19] }}</td>
+      <td>
+        <form method="post" action="/panel/pending" style="display:inline">
+          <input type="hidden" name="action" value="approve" />
+          <input type="hidden" name="ban_id" value="{{ b.get('id', '') }}" />
+          <button type="submit" class="btn btn-sm btn-primary">✔ Approve</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/panel/pending" style="display:inline">
+          <input type="hidden" name="action" value="reject" />
+          <input type="hidden" name="ban_id" value="{{ b.get('id', '') }}" />
+          <button type="submit" class="btn btn-sm btn-danger">✖ Reject</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-state">No pending approvals. All decisions have been processed.</p>
+{% endif %}
+{% endblock %}

@@ -17,9 +17,7 @@ import asyncio
 import json
 import logging
 import socket
-import time
 from collections import deque
-from datetime import UTC, datetime
 from typing import Any
 
 from waffy.core.models.domain import SecurityEvent
@@ -128,16 +126,16 @@ class SyslogEventSink:
             sock.sendto(payload, (self.host, self.port))
 
     async def _send_tcp(self, payload: bytes) -> None:
-        reader, writer = await asyncio.open_connection(self.host, self.port)
+        import contextlib
+
+        _reader, writer = await asyncio.open_connection(self.host, self.port)
         try:
             writer.write(payload + b"\n")
             await writer.drain()
         finally:
             writer.close()
-            try:
+            with contextlib.suppress(Exception):
                 await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
-            except Exception:
-                pass
 
     async def flush(self) -> None:
         """No-op: UDP is fire-and-forget; TCP flushes inline in emit."""

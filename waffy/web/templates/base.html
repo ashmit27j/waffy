@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}waffy Control Panel{% endblock %}</title>
+  <link rel="stylesheet" href="/panel/static/waffy.css" />
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-icon">🛡️</span>
+      <span class="brand-name">waffy</span>
+    </div>
+    <ul class="nav-list">
+      <li class="nav-item {% if active_page == 'dashboard' %}active{% endif %}">
+        <a href="/panel">📊 Dashboard</a>
+      </li>
+      <li class="nav-item {% if active_page == 'events' %}active{% endif %}">
+        <a href="/panel/events">🔔 Events</a>
+      </li>
+      <li class="nav-item {% if active_page == 'bans' %}active{% endif %}">
+        <a href="/panel/bans">🚫 Bans</a>
+      </li>
+      <li class="nav-item {% if active_page == 'allowlist' %}active{% endif %}">
+        <a href="/panel/allowlist">✅ Allowlist</a>
+      </li>
+      <li class="nav-item {% if active_page == 'pending' %}active{% endif %}">
+        <a href="/panel/pending">⏳ Pending</a>
+      </li>
+      <li class="nav-item nav-danger {% if active_page == 'killswitch' %}active{% endif %}">
+        <a href="/panel/killswitch">⚡ Kill-Switch</a>
+      </li>
+    </ul>
+    <div class="sidebar-footer">
+      <small>waffy v0.1.0</small>
+    </div>
+  </nav>
+  <main class="main-content">
+    {% if not ipc_ok %}
+    <div class="alert alert-warning">
+      ⚠️ <strong>waffy-core IPC unavailable</strong> — displayed data may be stale.
+    </div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/panel/static/waffy.js"></script>
+</body>
+</html>

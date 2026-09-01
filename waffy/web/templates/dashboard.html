@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — waffy{% endblock %}
+{% block content %}
+<h1 class="page-title">Dashboard</h1>
+
+<div class="mode-banner mode-banner-{{ mode | lower }}">
+  Enforcement mode: <strong>{{ mode }}</strong>
+  {% if mode == "SHADOW" %}
+  — <em>Observe only. No requests are being blocked.</em>
+  {% elif mode == "ACTIVE" %}
+  — <em>Active enforcement. Malicious requests will be blocked.</em>
+  {% else %}
+  — <em>Status unknown.</em>
+  {% endif %}
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-value">{{ ban_count }}</div>
+    <div class="stat-label">Active Bans</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ allowlist_count }}</div>
+    <div class="stat-label">Allowlist Entries</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ events | length }}</div>
+    <div class="stat-label">Recent Events</div>
+  </div>
+  <div class="stat-card stat-card-ipc">
+    <div class="stat-value">{{ "🟢" if ipc_ok else "🔴" }}</div>
+    <div class="stat-label">Core IPC</div>
+  </div>
+</div>
+
+<h2>Recent Security Events</h2>
+{% if events %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Type</th>
+      <th>Severity</th>
+      <th>Source IP</th>
+      <th>Summary</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in events %}
+    <tr class="severity-{{ e.get('severity', 'info') | lower }}">
+      <td class="mono">{{ e.get('timestamp', '')[:19] }}</td>
+      <td>{{ e.get('type', '') }}</td>
+      <td><span class="badge badge-{{ e.get('severity', 'info') | lower }}">{{ e.get('severity', '') }}</span></td>
+      <td class="mono">{{ e.get('source_ip', '') }}</td>
+      <td>{{ e.get('summary', '') }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-state">No events yet. Traffic will appear here once waffy-core is running.</p>
+{% endif %}
+{% endblock %}

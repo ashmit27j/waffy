@@ -43,7 +43,7 @@ class MetricsRegistry:
         self._ban_list_size: int = 0
         # Score histogram buckets (upper bounds in score units)
         _buckets = [5.0, 15.0, 25.0, 40.0, 60.0, 100.0, float("inf")]
-        self._score_buckets: dict[float, int] = {b: 0 for b in _buckets}
+        self._score_buckets: dict[float, int] = dict.fromkeys(_buckets, 0)
         self._score_count: int = 0
         self._score_sum: float = 0.0
 

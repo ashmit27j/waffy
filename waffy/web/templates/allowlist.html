@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Allowlist — waffy{% endblock %}
+{% block content %}
+<h1 class="page-title">Allowlist</h1>
+{% if message %}
+<div class="alert alert-info">{{ message }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>Add Entry</h2>
+  <form method="post" action="/panel/allowlist" class="inline-form">
+    <input type="hidden" name="action" value="add" />
+    <label for="allowlist-target">IP / CIDR</label>
+    <input id="allowlist-target" type="text" name="target" placeholder="e.g. 10.0.0.0/24" required />
+    <label for="allowlist-reason">Reason</label>
+    <input id="allowlist-reason" type="text" name="reason" value="Control panel entry" />
+    <button type="submit" class="btn btn-primary">Add to Allowlist</button>
+  </form>
+</div>
+
+<h2>Current Entries ({{ entries | length }})</h2>
+{% if entries %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Target</th>
+      <th>Reason</th>
+      <th>Created By</th>
+      <th>Created At</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in entries %}
+    <tr>
+      <td class="mono"><strong>{{ e.get('target', '') }}</strong></td>
+      <td>{{ e.get('reason', '') }}</td>
+      <td>{{ e.get('created_by', '') }}</td>
+      <td class="mono">{{ e.get('created_at', '')[:19] }}</td>
+      <td>
+        <form method="post" action="/panel/allowlist" style="display:inline">
+          <input type="hidden" name="action" value="remove" />
+          <input type="hidden" name="target" value="{{ e.get('target', '') }}" />
+          <button type="submit" class="btn btn-sm btn-danger"
+                  onclick="return confirm('Remove {{ e.get(\"target\", \"\") }} from allowlist?')">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-state">No allowlist entries.</p>
+{% endif %}
+{% endblock %}

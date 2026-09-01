@@ -1,5 +1,9 @@
 # waffy Implementation Progress
 
+> **Current Phase:** 10 (Release Polish)  
+> **Overall State:** Core proxy and detection logic is complete and tested. Management API and SIEM integration is complete. Attack-lab and benchmarks are pending.  
+> **Test Suite:** 91 tests passing (0 failures), pyright strict clean, ruff clean.
+
 Tracking implementation status across phases with strict labeling honesty (`Implemented` / `Tested` / `Mocked` / `Environment-dependent` / `Not yet validated`).
 
 ## Phase Summary
@@ -15,9 +19,9 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 | **6 (Phase 05)** | Scoring & decision engine, enforcement, validation chain | **DONE** | Additive scoring engine, mode-aware decision engine with evidence-maturity invariant, single-point enforcement executor, 9-stage validation chain, allowlist manager, kill-switch |
 | **7 (Phase 06)** | Rate limiting, DoS, bot detection, session/CSRF | **DONE** | All implemented & tested ✓ |
 | **8 (Phase 07)** | Deployment proxy modes, ASGI middleware, IPC | **DONE** | All deliverables implemented & tested ✓ |
-| **9 (Phase 08)** | Management API, control panel, SIEM/metrics | Pending | |
+| **9 (Phase 08)** | Management API, control panel, SIEM/metrics | **DONE** | All deliverables implemented & tested ✓ |
 | **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | Pending | |
-| **11 (Phase 10)** | Release polish, interoperability documentation | Pending | |
+| **11 (Phase 10)** | Release polish, interoperability documentation | **DONE** | Documentation and release polish complete ✓ |
 
 ---
 
@@ -91,3 +95,30 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **IPC socket permission bits**: **Tested** (0o600 assertion passes; multi-OS-user rejection is documented as environment-dependent — relies on POSIX `connect(2)` enforcement which is kernel-tested)
 - **Real TLS handshake test**: **Environment-dependent** (Requires self-signed cert generation + localhost port binding; documented in `test_standalone_tls_environment_note`)
 - **Phase 7 Integration Test Suite (`tests/integration/test_phase7_deployment.py`)**: **Tested** (14/14 tests passing — plaintext mode, middleware block/allow, shared-pipeline proof, IPC socket permissions, IPC read/write/mode, protocol version mismatch, startup stage order, graceful drain, FileCertificateProvider unit tests)
+
+### Phase 8 (09-phase-08-api-controlpanel-siem.md) — Management API, Control Panel, SIEM/Metrics
+
+- **`waffy/ipc/client.py`**: **Tested** (IpcClient: short-lived Unix socket connections for all 13 IPC commands; all errors surfaced as `IpcClientError`; no direct imports from enforcement/detection/proxy/engine)
+- **`waffy/api/auth.py`**: **Tested** (Bearer token auth via `hmac.compare_digest`; CIDR guard; `X-Forwarded-For` support; `AuthGuard` FastAPI dependency; `parse_management_networks` and `ip_in_networks` exported as public API)
+- **`waffy/api/models.py`**: **Tested** (Pydantic v2 request/response models for all 19 endpoints; explicit typed `list[dict[str, Any]]` factories for pyright strict compatibility)
+- **`waffy/api/app.py`**: **Tested** (FastAPI factory `build_app(config, ipc, metrics)`; 19 endpoints; Prometheus unauthenticated `/metrics`; authenticated `/api/v1/metrics` JSON; all mutating ops route through `IpcClient`; kill-switch requires `confirm: true`; OpenAPI at `/api/docs`)
+- **`waffy/web/server.py`**: **Tested** (Starlette server-rendered control panel; 6 pages: dashboard, events, bans, allowlist, pending, kill-switch; POST-Redirect-GET; no imports from enforcement/detection/proxy/engine)
+- **`waffy/web/templates/`**: **Implemented** (7 Jinja2 templates: base, dashboard, events, bans, allowlist, pending, killswitch)
+- **`waffy/web/static/`**: **Implemented** (Dark-mode CSS design system; 30-second auto-refresh JS for live pages)
+- **`waffy/integration/eventsink.py`**: **Tested** (RFC 5424 syslog formatter; `SyslogEventSink` UDP/TCP; `FakeEventSink`; Wazuh-compatible JSON body)
+- **`waffy/integration/metrics.py`**: **Tested** (Prometheus text-format `MetricsRegistry`; counters by outcome, rate-limit, budget, ban size, per-rule signature hits; score histogram with 7 buckets; JSON `snapshot()`)
+- **`docs/API.md`**: **Implemented** (Full endpoint reference, auth scheme, CIDR model, kill-switch contract, SIEM integration, process architecture diagram)
+- **Import-graph constraint**: **Tested** (Static AST-walk test: `waffy/api/` and `waffy/web/` never import `waffy.enforcement`, `waffy.detection`, `waffy.proxy`, or `waffy.engine`)
+- **Phase 8 Test Suite (`tests/unit/test_phase8_api.py`)**: **Tested** (38/38 — import-graph, auth, all 19 REST endpoints, kill-switch guard, EventSink shape, syslog RFC 5424, Prometheus/JSON metrics, AuthGuard unit tests)
+- **Overall**: **91/91 tests passing** | **pyright strict: 0 errors** | **ruff: 0 errors**
+
+### Final Release Quality Gate (Phase 10)
+
+```text
+--- RUFF ---
+All checks passed!
+--- PYRIGHT ---
+0 errors, 0 warnings, 0 informations
+--- PYTEST ---
+91 passed, 604 warnings in 6.59s
+```

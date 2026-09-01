@@ -14,20 +14,19 @@ Design rules:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
 from typing import Any
 
 from waffy.ipc.protocol import (
-    PROTOCOL_VERSION,
     AddAllowlistRequest,
     AddAllowlistResponse,
     ApprovePendingRequest,
     ApprovePendingResponse,
     GetModeRequest,
     GetModeResponse,
-    IpcResponse,
     ReadAllowlistRequest,
     ReadAllowlistResponse,
     ReadBansRequest,
@@ -102,10 +101,8 @@ class IpcClient:
             raise IpcClientError(f"IPC communication error: {exc}") from exc
         finally:
             writer.close()
-            try:
+            with contextlib.suppress(Exception):
                 await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
-            except Exception:
-                pass
 
     # ---------------------------------------------------------------------- #
     # Read methods                                                             #

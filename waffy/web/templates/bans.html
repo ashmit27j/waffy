@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Ban List — waffy{% endblock %}
+{% block content %}
+<h1 class="page-title">Ban List</h1>
+<p class="page-desc">{{ bans | length }} active ban(s). Bans set to PENDING_APPROVAL also appear in the <a href="/panel/pending">Pending</a> queue.</p>
+
+{% if bans %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Target</th>
+      <th>Scope</th>
+      <th>Status</th>
+      <th>Reason</th>
+      <th>Created</th>
+      <th>Expires</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for b in bans %}
+    <tr>
+      <td class="mono small">{{ b.get('id', '')[:8] }}…</td>
+      <td class="mono"><strong>{{ b.get('target', '') }}</strong></td>
+      <td>{{ b.get('scope', '') }}</td>
+      <td><span class="badge badge-{{ b.get('status', 'active') | lower }}">{{ b.get('status', '') }}</span></td>
+      <td>{{ b.get('reason', '') }}</td>
+      <td class="mono">{{ b.get('created_at', '')[:19] }}</td>
+      <td class="mono">{{ b.get('expires_at', '')[:19] }}</td>
+      <td>
+        <form method="post" action="/panel/bans" style="display:inline">
+          <input type="hidden" name="action" value="remove" />
+          <input type="hidden" name="ban_id" value="{{ b.get('id', '') }}" />
+          <button type="submit" class="btn btn-sm btn-danger"
+                  onclick="return confirm('Remove ban on {{ b.get(\"target\", \"\") }}?')">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-state">No active bans.</p>
+{% endif %}
+{% endblock %}

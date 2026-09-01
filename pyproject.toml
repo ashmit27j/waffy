@@ -55,6 +55,13 @@ typeCheckingMode = "strict"
 include = ["waffy", "tests"]
 exclude = ["**/__pycache__", ".venv"]
 reportMissingTypeStubs = false
+# FastAPI route handler functions are registered via @app.get/post decorators
+# and are therefore not "called" directly — suppress the false positive.
+reportUnusedFunction = false
+# Starlette's TestClient wraps httpx without stubs; response members are Unknown.
+# These suppressions only affect test files (source code doesn't trigger them).
+reportUnknownVariableType = false
+reportUnknownMemberType = false
 
 [tool.pytest.ini_options]
 minversion = "8.0"

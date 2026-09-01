@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Security Events — waffy{% endblock %}
+{% block content %}
+<h1 class="page-title">Security Events</h1>
+<p class="page-desc">Most recent 100 security events from waffy-core's ring buffer. <button id="refresh-btn" class="btn btn-sm" onclick="location.reload()">↻ Refresh</button></p>
+
+{% if events %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>ID</th>
+      <th>Type</th>
+      <th>Severity</th>
+      <th>Source IP</th>
+      <th>Correlation ID</th>
+      <th>Summary</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in events %}
+    <tr class="severity-{{ e.get('severity', 'info') | lower }}">
+      <td class="mono">{{ e.get('timestamp', '')[:19] }}</td>
+      <td class="mono small">{{ e.get('id', '')[:8] }}…</td>
+      <td>{{ e.get('type', '') }}</td>
+      <td><span class="badge badge-{{ e.get('severity', 'info') | lower }}">{{ e.get('severity', '') }}</span></td>
+      <td class="mono">{{ e.get('source_ip', '') }}</td>
+      <td class="mono small">{{ e.get('correlation_id', '')[:8] }}…</td>
+      <td>{{ e.get('summary', '') }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-state">No security events recorded yet.</p>
+{% endif %}
+{% endblock %}

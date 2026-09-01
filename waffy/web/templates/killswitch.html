@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Kill-Switch — waffy{% endblock %}
+{% block content %}
+<h1 class="page-title">⚡ Emergency Kill-Switch</h1>
+
+<div class="alert alert-danger">
+  <strong>Destructive action.</strong> Engaging the kill-switch will:
+  <ul>
+    <li>Immediately set waffy-core to <strong>SHADOW mode</strong> (all blocking suspended)</li>
+    <li>Revoke all active bans</li>
+    <li>Log a high-severity audit event</li>
+  </ul>
+  This is intended for emergency situations where waffy is incorrectly blocking legitimate traffic.
+  A restart of waffy-core is required to re-enable active enforcement.
+</div>
+
+{% if message %}
+<div class="alert {% if engaged %}alert-success{% else %}alert-warning{% endif %}">{{ message }}</div>
+{% endif %}
+
+{% if not engaged %}
+<div class="card kill-switch-card">
+  <h2>Confirm Kill-Switch</h2>
+  <form method="post" action="/panel/killswitch" onsubmit="return confirm('Are you sure? This will disable all blocking immediately.')">
+    <label for="ks-reason">Reason (logged in audit trail)</label>
+    <input id="ks-reason" type="text" name="reason" value="Operator kill-switch via control panel" required />
+    <div class="confirm-row">
+      <input type="checkbox" id="ks-confirm" name="confirm" value="yes" required />
+      <label for="ks-confirm">I understand this will immediately disable all blocking.</label>
+    </div>
+    <button type="submit" class="btn btn-danger btn-lg">⚡ Engage Kill-Switch</button>
+  </form>
+</div>
+{% else %}
+<div class="card">
+  <p>Kill-switch has been engaged. waffy-core is now in SHADOW mode.</p>
+  <a href="/panel" class="btn btn-primary">← Back to Dashboard</a>
+</div>
+{% endif %}
+{% endblock %}
