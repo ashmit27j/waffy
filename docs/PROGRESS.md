@@ -21,7 +21,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 | **7 (Phase 06)** | Rate limiting, DoS, bot detection, session/CSRF | **DONE** | All implemented & tested ✓ |
 | **8 (Phase 07)** | Deployment proxy modes, ASGI middleware, IPC | **DONE** | All deliverables implemented & tested ✓ |
 | **9 (Phase 08)** | Management API, control panel, SIEM/metrics | **DONE** | All deliverables implemented & tested ✓ |
-| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus + runner done (prompts/01); benchmarks, TLS integration test, JA3/JA4, state persistence, HTTP/2 coverage, config validation warnings still pending (prompts/02-07) |
+| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus + runner (prompts/01) and performance benchmarks (prompts/02) done; TLS integration test, JA3/JA4, state persistence, HTTP/2 coverage, config validation warnings still pending (prompts/03-07) |
 | **11 (Phase 10)** | Release polish, interoperability documentation | **DONE** | Documentation and release polish complete ✓ |
 
 ---
@@ -123,6 +123,16 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
   - **PL2/PL3/PL4**: identical to PL1 except open_redirect rises to 100% (2/2) once its PL2 signature is enabled — no PL3/PL4-only signatures exist yet in `config/rules/seed_rules.toml`, so PL3/PL4 numbers are identical to PL2. Benign false-positive rate unchanged: **0.00% (0/7)** at every level.
   - **Known real gap** (not a corpus bug — verified by regex analysis and left as-is per this task's "measurement, not tuning" constraint): `WAFFY-SSTI-001`'s `${...}` alternative requires `Runtime`/`exec`/a digit expression *immediately* before the closing `}`. `${Runtime.getRuntime()}` ends in `()}`, so it does not match. Follow-up: broaden the FreeMarker `${...}` alternative in a future signature-tuning task (out of scope here).
   - Benign corpus is only 7 items — a real per-route production FP rate is **Not yet validated**; 0% here is an honest measurement on a small synthetic sample, not a production guarantee.
+- **`docs/PROGRESS.md`**: this entry (**Implemented**)
+
+### Phase 9 / Task 02 (prompts/02-performance-benchmarks.md) — Performance Benchmark Suite
+
+- **`scripts/benchmarks/common.py`**: **Tested** (Shared pipeline factory — real seed signatures at PL1, `FakeUpstreamClient`, SHADOW mode, ML anomaly scorer disabled — plus a raw-ASGI-scope request driver that times only `await pipeline(...)`, excluding httpx client overhead)
+- **`scripts/benchmarks/latency_bench.py`**: **Tested** (200 warmup + 2000 measured sequential requests, IP-rotated to avoid rate-limiter skew; reports min/p50/p95/p99/max/mean/stdev in ms plus reference-hardware metadata)
+- **`scripts/benchmarks/throughput_bench.py`**: **Tested** (64 concurrent IP-distinct workers over a 5s window; reports sustained req/sec and a direct queue-growth check via per-second completion-count trend)
+- **`docs/PERFORMANCE.md`**: **Implemented** (Real measured output from both scripts, explicit in-process/FakeUpstreamClient scope statement, reference hardware: 12th Gen i7-12700F / 20 logical CPUs / 15 GiB RAM / WSL2 Ubuntu / CPython 3.14.4, run timestamped 2026-09-02)
+- **Measured results (this session)**: **p99 added latency: 0.34 ms** (148-byte JSON body, PL1 default rule set); **sustained throughput: ~7,325 req/sec** at concurrency 64 with `queue_growth_detected: false` (flat per-second completion profile across the 5s window). No prior target existed to compare against — this run establishes the baseline.
+- **Caveat carried into docs/PERFORMANCE.md**: single-process, single-machine, `FakeUpstreamClient`-backed numbers only — no real network RTT, no real upstream latency, no TLS handshake cost, ML anomaly scoring not exercised. **Not yet validated** against a real deployment.
 - **`docs/PROGRESS.md`**: this entry (**Implemented**)
 
 ### Final Release Quality Gate (Phase 10)
