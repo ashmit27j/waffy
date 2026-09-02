@@ -12,6 +12,67 @@ will grow as later tasks add entries — it did not exist before prompts/04.
 
 ---
 
+## Persistence audit (prompts/05) — does enforcement state survive a restart?
+
+**Audit method**: grepped the codebase for every implementation of
+`waffy.core.interfaces.RuleStore` (the Protocol covering bans, allowlist
+entries, and virtual patches), and traced how `approve_pending`/`reject_pending`
+(the "pending-approval queue") are actually stored.
+
+**Finding, before this task**: `RuleStore` had exactly **one** implementation
+anywhere in the codebase: `tests/helpers/fakes.py::FakeRuleStore`, three
+plain in-memory `dict`s, explicitly a test double. No file/sqlite-backed
+implementation existed despite `CLAUDE.md` naming one as a required
+component ("the persistent ban/rule store (`RuleStore` Protocol, real
+file/sqlite-backed implementation, in-memory `Fake`)"). There is also no
+separate "pending queue" store — `approve_pending`/`reject_pending`
+(`waffy/ipc/server.py`) operate on the same `RuleStore.add_ban`/`list_active_bans`/
+`remove_ban` methods as regular bans, distinguished only by `BanEntry.status`.
+`waffy/enforcement/validation.py`'s "persistent action validation chain"
+naming refers to the *duration* of an enforcement action (a ban that outlives
+a single request, as opposed to a per-request decision) — it does not itself
+read or write disk; it only builds a `BanEntry` and returns it, and the
+*caller* is responsible for calling `rule_store.add_ban()`.
+
+**Conclusion**: **before this task, 100% of waffy's active security state —
+ban list, dynamic allowlist entries, and pending-approval bans — was
+in-memory only and was silently lost on every restart or crash**, with no
+operator-visible warning anywhere in the codebase.
+
+**What changed**: `waffy/enforcement/store.py` adds:
+- `InMemoryRuleStore` — the same ephemeral behavior as before, but now a
+  named, documented, *production* class (not a test-only Fake), used as the
+  explicit default.
+- `SqliteRuleStore` — a real, disk-backed implementation (stdlib `sqlite3`,
+  no new dependency, no database server), selected by setting the new
+  `EnforcementConfig.state_store_path` config field. Every synchronous
+  sqlite3 call is offloaded via `asyncio.to_thread`. Proven to survive a
+  simulated restart (`tests/unit/test_enforcement_persistence.py::test_sqlite_rule_store_survives_simulated_restart`
+  constructs a second, independent `SqliteRuleStore` instance against the
+  same file and confirms it sees the first instance's writes) and proven to
+  be a true drop-in replacement — `AllowlistManager` and the 9-stage
+  `ActionValidationChain` needed zero code changes to work against it
+  (`test_allowlist_manager_and_validation_chain_work_unmodified_with_sqlite_store`).
+- `build_rule_store(config)` — picks the backend, and logs an explicit
+  `logging.WARNING` (`waffy.enforcement.store` logger) whenever the ephemeral
+  `InMemoryRuleStore` is chosen, so "in-memory, state lost on restart" can
+  never happen silently going forward, whether or not an operator has
+  configured persistence.
+
+**Current state, honestly**: persistence is real and tested, but **opt-in**
+— `state_store_path` defaults to unset, so a fresh install is still
+ephemeral by default until an operator configures it (see
+`docs/DEPLOYMENT.md`). This was a deliberate choice: this task's scope was
+"does state survive a restart, and can it," not "change the zero-config
+default behavior of every existing deployment/test that constructs a
+`RuleStore` today" — flipping the *default* to always-persistent would be a
+larger behavioral change than this task asked for, and risks masking a
+misconfigured/unwritable `state_store_path` behind a silent fallback. The
+validation chain order (9 stages, `waffy/enforcement/validation.py`) is
+completely unchanged — this was a storage-backend swap only.
+
+---
+
 ## Dependency decisions
 
 ### prompts/04 — JA3/JA4 TLS fingerprint extraction: no new dependency added

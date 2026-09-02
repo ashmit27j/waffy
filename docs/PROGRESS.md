@@ -21,7 +21,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 | **7 (Phase 06)** | Rate limiting, DoS, bot detection, session/CSRF | **DONE** | All implemented & tested ✓ |
 | **8 (Phase 07)** | Deployment proxy modes, ASGI middleware, IPC | **DONE** | All deliverables implemented & tested ✓ |
 | **9 (Phase 08)** | Management API, control panel, SIEM/metrics | **DONE** | All deliverables implemented & tested ✓ |
-| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus (prompts/01), benchmarks (prompts/02), real TLS handshake test (prompts/03), JA3/JA4 fingerprinting (prompts/04) done; state persistence, HTTP/2 coverage, config validation warnings still pending (prompts/05-07) |
+| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus (prompts/01), benchmarks (prompts/02), real TLS handshake test (prompts/03), JA3/JA4 fingerprinting (prompts/04), enforcement-state persistence (prompts/05) done; HTTP/2 coverage, config validation warnings still pending (prompts/06-07) |
 | **11 (Phase 10)** | Release polish, interoperability documentation | **DONE** | Documentation and release polish complete ✓ |
 
 ---
@@ -69,7 +69,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **`waffy/engine/scoring.py`**: **Tested** (Config-driven additive scoring across signatures, positive security violations, ML anomaly, bot, and rate limits mapping to ThreatLevel)
 - **`waffy/engine/decision.py`**: **Tested** (Mode-aware decision table implementing the **Evidence-Maturity Invariant**: single weak signals are downgraded to CHALLENGE and never BLOCK without high-confidence low-FP category match, multiple corroborating categories, or recurring source readings tracked via bounded LRU `ConsistencyTracker`)
 - **`waffy/enforcement/actions.py`**: **Tested** (The single authorized execution point: ALLOW, LOG, RATE_LIMIT [429 + Retry-After], BLOCK [403 non-leaking generic response], CHALLENGE [verification delegator])
-- **`waffy/enforcement/validation.py`**: **Tested** (9-stage persistent action validation chain: schema -> network validity -> allowlist -> safety [management CIDRs, localhost, /24 IPv4 and /64 IPv6 width limits] -> conflict -> duplicate -> sliding-window rate-cap -> expiration -> authorization)
+- **`waffy/enforcement/validation.py`**: **Tested** (9-stage persistent action validation chain: schema -> network validity -> allowlist -> safety [management CIDRs, localhost, /24 IPv4 and /64 IPv6 width limits] -> conflict -> duplicate -> sliding-window rate-cap -> expiration -> authorization; "persistent" here means long-lived action duration, not disk persistence — confirmed by audit in Phase 9 / Task 05 below; chain itself never reads/writes disk)
 - **`waffy/enforcement/allowlist.py`**: **Tested** (Static/dynamic allowlist manager with unconditional decision override)
 - **`waffy/enforcement/killswitch.py`**: **Tested** (Emergency kill-switch setting mode to SHADOW, revoking all active bans, preserving allowlists, and logging audit events)
 - **`waffy/http/pipeline.py`**: **Tested** (Full inline pipeline application orchestrating parse -> detect -> score -> decide -> enforce end-to-end)
@@ -155,6 +155,18 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **Dependency decision**: **no new dependency added** — full justification, including why canonical byte-perfect JA3 isn't yet the production path and what a follow-up would need, is in `docs/ARCHITECTURE.md` (new file, created by this task).
 - **Pre-existing gap noticed, not fixed here (out of scope for this task)**: `config/default_config.toml`'s `[bot]` section doesn't match `WaffyConfig.bot_detection`'s expected `[bot_detection]` section name, so bot-detection TOML config is currently silently ignored at load time regardless of this task. Documented in `docs/ARCHITECTURE.md`, flagged as a natural fit for prompts/07's config-validation-warnings task.
 - **`docs/PROGRESS.md`**: this entry + the bot/engine.py line above updated (**Implemented**)
+
+### Phase 9 / Task 05 (prompts/05-enforcement-state-persistence.md) — Audit & Fix Ban List / Allowlist / Pending-Queue Persistence
+
+- **Audit finding**: **before this task, 100% of enforcement state (ban list, allowlist, pending-approval queue) was in-memory only** — `RuleStore` had exactly one implementation anywhere in the codebase (`tests/helpers/fakes.py::FakeRuleStore`, a test-only in-memory double) despite `CLAUDE.md` naming a real file/sqlite-backed implementation as a required deliverable. Full write-up in `docs/ARCHITECTURE.md`'s "Persistence audit" section (new).
+- **`waffy/enforcement/store.py`** (new module): **Tested**.
+  - `InMemoryRuleStore`: the same ephemeral behavior as before, now a named production class (not a test Fake), used as the explicit default.
+  - `SqliteRuleStore`: real, disk-backed `RuleStore` implementation (stdlib `sqlite3`, no new dependency, no database server). Every sync call offloaded via `asyncio.to_thread`. **Proven** to survive a simulated restart (`test_sqlite_rule_store_survives_simulated_restart`: a second, independent instance against the same file sees the first instance's writes) and proven to be a true drop-in — `AllowlistManager` and the unmodified 9-stage `ActionValidationChain` work against it with zero code changes (`test_allowlist_manager_and_validation_chain_work_unmodified_with_sqlite_store`).
+  - `build_rule_store(config)`: picks the backend from `EnforcementConfig.state_store_path` (new config field, default `None`); logs an explicit `WARNING` whenever the ephemeral store is chosen — **tested** (`test_build_rule_store_warns_and_returns_ephemeral_by_default`).
+- **Persistence is opt-in, not the new default**: a fresh install remains ephemeral until an operator sets `enforcement.state_store_path` — deliberate scope boundary, explained in `docs/ARCHITECTURE.md`.
+- **`docs/DEPLOYMENT.md`**: new "Enforcement State Persistence" section — states the restart-loses-everything risk plainly, gives the config snippet to opt in, and notes what's not yet built (rotation/backup, multi-instance sharing).
+- **Validation chain**: **unchanged** — 9 stages, same order, same rejection behavior; this task was a storage-backend swap only, confirmed by the drop-in test above.
+- **`docs/PROGRESS.md`**: this entry + the `validation.py` "persistent" terminology clarification above (**Implemented**)
 
 ### Final Release Quality Gate (Phase 10)
 

@@ -266,6 +266,47 @@ usermod -aG waffy waffy-api-user
 
 ---
 
+## Enforcement State Persistence (ban list, allowlist, virtual patches)
+
+> **By default, waffy's active security state is in-memory only and does
+> NOT survive a process restart or crash.** This includes the ban list,
+> dynamic allowlist entries, and the pending-approval queue (pending bans are
+> ordinary ban entries awaiting approval — they use the same store). A
+> restart with no persistence configured means every active ban is gone and
+> every allowlist change an operator made through the control panel or API is
+> gone — the process comes back up with a clean slate.
+
+This is logged loudly, not silently: if `enforcement.state_store_path` is
+unset, `waffy.enforcement.store.build_rule_store()` logs a `WARNING` on
+every startup naming exactly this risk.
+
+**To persist state across restarts**, set `enforcement.state_store_path` to
+a writable file path (inside the process's own state directory — see
+`docs/MASTER_SPEC.md` §16 on `waffy-core`'s filesystem permissions):
+
+```toml
+# config/waffy.toml
+[enforcement]
+mode               = "active"
+state_store_path   = "/var/lib/waffy/state.db"
+```
+
+This switches the backing `RuleStore` from the ephemeral
+`InMemoryRuleStore` to `SqliteRuleStore` (stdlib `sqlite3`, no database
+server, no new dependency) — a drop-in swap; nothing else about enforcement
+behavior, the 9-stage validation chain, or the allowlist's unconditional
+override changes. Ensure the parent directory is writable by the `waffy`
+service user and is not shared with the `waffy-api` process's own state
+(the IPC boundary, not shared file access, is the intended communication
+path between the two processes — see the IPC Socket section above).
+
+**Not yet built**: rotation/backup tooling for the SQLite file, and any
+migration path for a schema change to the JSON blobs it stores. For a first
+deployment, treat `state_store_path` as a single-instance file — don't share
+it across multiple `waffy-core` processes.
+
+---
+
 ## Choosing a Mode
 
 | Criterion | Standalone TLS (1) | Plaintext Proxy (2) | ASGI Middleware (3) |

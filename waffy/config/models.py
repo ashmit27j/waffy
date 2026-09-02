@@ -167,6 +167,15 @@ class EnforcementConfig(BaseModel):
     block_status_code: int = Field(default=403, ge=400, le=599)
     max_bans_per_hour: int = Field(default=50, ge=1)
     default_ban_duration_seconds: int = Field(default=3600, ge=1)
+    state_store_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to a SQLite file backing ban/allowlist/virtual-patch state "
+            "(waffy.enforcement.store.SqliteRuleStore). If unset (the "
+            "default), state is kept in an in-memory store only and does NOT "
+            "survive a process restart — see docs/DEPLOYMENT.md."
+        ),
+    )
 
 
 class AllowlistConfig(BaseModel):
