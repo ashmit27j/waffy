@@ -2,7 +2,8 @@
 
 > **Current Phase:** 10 (Release Polish)  
 > **Overall State:** Core proxy and detection logic is complete and tested. Management API and SIEM integration is complete. Attack-lab and benchmarks are pending.  
-> **Test Suite:** 91 tests passing (0 failures), pyright strict clean, ruff clean.
+> **Test Suite:** 96 tests passing (0 failures), pyright strict clean, ruff clean.
+> **Environment note:** the IPC layer requires `asyncio.start_unix_server`/`socket.AF_UNIX`, which native Windows Python does not provide. All commands in this document were run under WSL Ubuntu (`/mnt/d/...`, Python 3.14.4) — see the Phase 9 entry below for the session this was confirmed in.
 
 Tracking implementation status across phases with strict labeling honesty (`Implemented` / `Tested` / `Mocked` / `Environment-dependent` / `Not yet validated`).
 
@@ -20,7 +21,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 | **7 (Phase 06)** | Rate limiting, DoS, bot detection, session/CSRF | **DONE** | All implemented & tested ✓ |
 | **8 (Phase 07)** | Deployment proxy modes, ASGI middleware, IPC | **DONE** | All deliverables implemented & tested ✓ |
 | **9 (Phase 08)** | Management API, control panel, SIEM/metrics | **DONE** | All deliverables implemented & tested ✓ |
-| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | Pending | |
+| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus + runner done (prompts/01); benchmarks, TLS integration test, JA3/JA4, state persistence, HTTP/2 coverage, config validation warnings still pending (prompts/02-07) |
 | **11 (Phase 10)** | Release polish, interoperability documentation | **DONE** | Documentation and release polish complete ✓ |
 
 ---
@@ -111,6 +112,18 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **Import-graph constraint**: **Tested** (Static AST-walk test: `waffy/api/` and `waffy/web/` never import `waffy.enforcement`, `waffy.detection`, `waffy.proxy`, or `waffy.engine`)
 - **Phase 8 Test Suite (`tests/unit/test_phase8_api.py`)**: **Tested** (38/38 — import-graph, auth, all 19 REST endpoints, kill-switch guard, EventSink shape, syslog RFC 5424, Prometheus/JSON metrics, AuthGuard unit tests)
 - **Overall**: **91/91 tests passing** | **pyright strict: 0 errors** | **ruff: 0 errors**
+
+### Phase 9 / Task 01 (prompts/01-attack-lab-corpus.md) — Synthetic Attack-Lab Corpus & Measurement Runner
+
+- **`scripts/attack-lab/corpus.py`**: **Tested** (Hand-authored, fully synthetic attack corpus — 2-4 payload variants per §7 category matching the 11 seed signature categories, plus a loader for the existing `tests/security/fixtures/benign/benign_traffic.json` shared benign fixture; nothing downloaded or fetched at runtime)
+- **`scripts/attack-lab/run_corpus.py`**: **Tested** (CLI runner measuring true-positive rate per category and false-positive rate on the benign corpus at every `ParanoiaLevel` (PL1-PL4); `--report` for a human table, `--json` for machine-readable output; never modifies `waffy/detection/signatures/`, `waffy/detection/positive/`, or `config/rules/seed_rules.toml`)
+- **`tests/security/test_attack_lab.py`**: **Tested** (5/5 passing; invokes the runner as a subprocess and asserts on real measured output, not hardcoded expectations)
+- **Measured results (WSL Ubuntu, Python 3.14.4, this session, `uv run python scripts/attack-lab/run_corpus.py --report`)**:
+  - **PL1**: sqli 100% (3/3), xss 100% (3/3), command_injection 100% (4/4), path_traversal 100% (3/3), lfi_rfi 100% (3/3), **ssti 66.67% (2/3)**, xxe 100% (2/2), deserialization 100% (2/2), crlf_injection 100% (2/2), open_redirect 0% (0/2 — correct, PL2-gated signature), scanner_fingerprint 100% (3/3). Benign false-positive rate: **0.00% (0/7)**.
+  - **PL2/PL3/PL4**: identical to PL1 except open_redirect rises to 100% (2/2) once its PL2 signature is enabled — no PL3/PL4-only signatures exist yet in `config/rules/seed_rules.toml`, so PL3/PL4 numbers are identical to PL2. Benign false-positive rate unchanged: **0.00% (0/7)** at every level.
+  - **Known real gap** (not a corpus bug — verified by regex analysis and left as-is per this task's "measurement, not tuning" constraint): `WAFFY-SSTI-001`'s `${...}` alternative requires `Runtime`/`exec`/a digit expression *immediately* before the closing `}`. `${Runtime.getRuntime()}` ends in `()}`, so it does not match. Follow-up: broaden the FreeMarker `${...}` alternative in a future signature-tuning task (out of scope here).
+  - Benign corpus is only 7 items — a real per-route production FP rate is **Not yet validated**; 0% here is an honest measurement on a small synthetic sample, not a production guarantee.
+- **`docs/PROGRESS.md`**: this entry (**Implemented**)
 
 ### Final Release Quality Gate (Phase 10)
 
