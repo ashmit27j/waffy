@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import time
 from collections import OrderedDict, deque
+from typing import Literal
 
 from waffy.config.models import CredentialStuffingConfig
 
@@ -96,6 +97,46 @@ class CredentialStuffingDetector:
         Query only; does not affect detection logic.
         """
         return bool(self.config.login_failure_routes)
+
+    def check_velocity(
+        self,
+        source_ip: str,
+        account: str | None = None,
+        now: float | None = None,
+    ) -> tuple[bool, Literal["ip", "account", ""], str]:
+        """Non-mutating peek (aside from pruning expired entries) at whether
+        *source_ip* or *account* already has excess failed-login attempts
+        recorded in the current window -- unlike ``record_failed_attempt``,
+        this never adds a new failed attempt. Used to produce evidence for
+        the *current* request based on failures already recorded from prior
+        responses, so a request itself never trips on its own outcome.
+
+        Returns (is_tripped, scope, reason) where scope is "ip" or "account".
+        """
+        current_time = now if now is not None else time.time()
+        window_start = current_time - self.config.window_seconds
+
+        src_dq = self.source_failures.get(source_ip)
+        if src_dq is not None:
+            while src_dq and src_dq[0] < window_start:
+                src_dq.popleft()
+            if len(src_dq) > self.config.max_failed_logins_per_ip:
+                reason = f"Failed login threshold exceeded for source IP ({len(src_dq)} in window)"
+                return True, "ip", reason
+
+        if account:
+            acc_dq = self.account_failures.get(account)
+            if acc_dq is not None:
+                while acc_dq and acc_dq[0] < window_start:
+                    acc_dq.popleft()
+                if len(acc_dq) > self.config.max_failed_logins_per_account:
+                    reason = (
+                        f"Failed login threshold exceeded for account '{account}' "
+                        f"({len(acc_dq)} in window)"
+                    )
+                    return True, "account", reason
+
+        return False, "", ""
 
     def record_failed_attempt(
         self,

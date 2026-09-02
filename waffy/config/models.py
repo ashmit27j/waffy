@@ -177,6 +177,8 @@ class EngineConfig(BaseModel):
     weight_anomaly: float = Field(default=10.0, ge=0.0)
     weight_bot: float = Field(default=10.0, ge=0.0)
     weight_rate_limit: float = Field(default=15.0, ge=0.0)
+    weight_csrf_violation: float = Field(default=10.0, ge=0.0)
+    weight_credential_stuffing: float = Field(default=15.0, ge=0.0)
 
     threshold_low: float = Field(default=5.0, ge=0.0)
     threshold_medium: float = Field(default=15.0, ge=0.0)

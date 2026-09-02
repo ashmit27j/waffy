@@ -96,6 +96,8 @@ weight_positive_violation = 5.0
 weight_anomaly = 10.0
 weight_bot = 10.0
 weight_rate_limit = 15.0
+weight_csrf_violation = 10.0
+weight_credential_stuffing = 15.0
 # Threat level score thresholds
 threshold_low = 5.0
 threshold_medium = 15.0

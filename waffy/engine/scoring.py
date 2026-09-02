@@ -4,7 +4,8 @@ Calculates RequestAssessment.total_score from:
 - Signature matches (weighted by paranoia level)
 - Positive security violations
 - Anomaly evidence (when present)
-- Rate limit trips & bot scores (in later phases)
+- Rate limit trips & bot scores
+- CSRF token violations & credential-stuffing velocity trips
 
 Maps total_score to ThreatLevel (LOW, MEDIUM, HIGH, CRITICAL).
 """
@@ -42,6 +43,14 @@ def compute_assessment_score(
     # 5. Rate limit state (if tripped)
     if assessment.rate_limit_state and assessment.rate_limit_state.tripped:
         total_score += config.weight_rate_limit
+
+    # 6. CSRF token violation (embedded mode, state-changing requests)
+    if assessment.csrf_violation:
+        total_score += config.weight_csrf_violation
+
+    # 7. Credential stuffing velocity (evidence from prior failed-login history)
+    if assessment.credential_stuffing_evidence and assessment.credential_stuffing_evidence.tripped:
+        total_score += config.weight_credential_stuffing
 
     # Threat Level classification
     if total_score >= config.threshold_critical:

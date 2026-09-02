@@ -1,5 +1,6 @@
 """Full pipeline orchestrator connecting:
-transport -> parse -> normalize -> detect (signatures + positive + anomaly + bot + ratelimit)
+transport -> parse -> normalize
+-> detect (signatures + positive + anomaly + bot + ratelimit + csrf + credential-stuffing)
 -> score -> decide -> enforce -> cookie rewriting.
 """
 
@@ -11,14 +12,24 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from waffy.config.models import WaffyConfig
+from waffy.core.enums import EnforcementAction, HttpMethod
 from waffy.core.exceptions import RequestMalformedError
 from waffy.core.interfaces import ChallengeVerifier, EventSink, RuleStore, UpstreamClient
-from waffy.core.models.domain import RequestAssessment
+from waffy.core.models.domain import (
+    CredentialStuffingEvidence,
+    CsrfViolation,
+    HttpRequestRecord,
+    RequestAssessment,
+)
 from waffy.detection.anomaly.scorer import AnomalyScorer
 from waffy.detection.bot.engine import BotDetectionEngine
 from waffy.detection.positive.models import PositiveSecurityEngine
 from waffy.detection.ratelimit.engine import RateLimitEngine
-from waffy.detection.session.services import CookieSecurityRewriter
+from waffy.detection.session.services import (
+    CookieSecurityRewriter,
+    CredentialStuffingDetector,
+    CsrfProtector,
+)
 from waffy.detection.signatures.engine import SignatureEngine
 from waffy.enforcement.actions import EnforcementExecutor
 from waffy.enforcement.allowlist import AllowlistManager
@@ -28,6 +39,36 @@ from waffy.http.limits import TransportResourceProtector
 from waffy.http.parser import parse_asgi_request
 
 logger = logging.getLogger("waffy.pipeline")
+
+# CSRF only applies to state-changing methods -- GET/HEAD/OPTIONS/TRACE/CONNECT
+# never carry a token to validate.
+_CSRF_UNSAFE_METHODS = frozenset(
+    {HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH, HttpMethod.DELETE}
+)
+
+# Common login-form field names, checked in order, for best-effort per-account
+# (not just per-IP) credential-stuffing velocity tracking.
+_ACCOUNT_FIELD_NAMES = ("username", "user", "email", "login")
+
+
+def _extract_account_identifier(record: HttpRequestRecord) -> str | None:
+    """Best-effort extraction of a submitted account identifier from a login
+    request body, for per-account credential-stuffing velocity tracking.
+    Only understands the two shapes ``waffy/http/body.py`` produces for JSON
+    and form-urlencoded bodies -- the realistic content types for an HTML or
+    API login form. Returns None on any other shape (e.g. multipart) rather
+    than guessing; per-IP tracking still applies regardless.
+    """
+    summary = record.parsed_body_summary
+    for field in _ACCOUNT_FIELD_NAMES:
+        if field not in summary:
+            continue
+        value = summary[field]
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list) and value and isinstance(value[0], str):
+            return value[0]
+    return None
 
 
 class WaffyPipelineApplication:
@@ -71,12 +112,73 @@ class WaffyPipelineApplication:
             enforce_httponly=config.cookie_security.enforce_httponly,
             samesite_policy=config.cookie_security.samesite_policy,
         )
+        self.csrf_protector = CsrfProtector(secret_key=config.csrf.secret_key)
+        self.credential_stuffing_detector = CredentialStuffingDetector(
+            config.credential_stuffing
+        )
 
         self.allowlist_manager = AllowlistManager(rule_store)
         self.decision_engine = DecisionEngine(config.engine, config.enforcement)
         self.executor = EnforcementExecutor(
             config.enforcement, upstream_client, challenge_verifier
         )
+
+    def _check_csrf(self, record: HttpRequestRecord) -> CsrfViolation | None:
+        """CSRF token evidence per MASTER_SPEC.md Section 10: token-based
+        validation is what embedded-middleware mode relies on (proxy modes
+        use a not-yet-implemented header-based check instead, per
+        CsrfConfig's docstring), so this only ever produces evidence when
+        ``transport.mode == "embedded"``. Only checked for state-changing
+        methods, and only when a session cookie is present -- an anonymous
+        POST with no session has no CSRF-protected state to defend.
+        """
+        if not self.config.csrf.enabled:
+            return None
+        if self.config.transport.mode != "embedded":
+            return None
+        if record.method not in _CSRF_UNSAFE_METHODS:
+            return None
+
+        session_id = record.cookies.get("session_id")
+        if not session_id:
+            return None
+
+        token: str | None = None
+        for hk, hv in record.headers:
+            if hk.lower() == "x-csrf-token":
+                token = hv
+                break
+
+        if not token:
+            return CsrfViolation(route=record.path, reason="missing_token")
+
+        if not self.csrf_protector.validate_token(
+            session_id, token, max_age_seconds=self.config.csrf.max_age_seconds
+        ):
+            return CsrfViolation(route=record.path, reason="invalid_token")
+
+        return None
+
+    def _check_credential_stuffing(
+        self, record: HttpRequestRecord
+    ) -> CredentialStuffingEvidence | None:
+        """Peek at failed-login velocity already recorded for this request's
+        source IP / targeted account (from prior responses -- see the
+        post-response recording in ``__call__``). Evidence-only: never
+        records a new failed attempt itself.
+        """
+        if not self.config.credential_stuffing.enabled:
+            return None
+        if not self.credential_stuffing_detector.is_configured():
+            return None
+
+        account = _extract_account_identifier(record)
+        tripped, scope, reason = self.credential_stuffing_detector.check_velocity(
+            record.client_ip, account=account
+        )
+        if not tripped:
+            return None
+        return CredentialStuffingEvidence(tripped=True, scope=scope, reason=reason)
 
     async def __call__(
         self,
@@ -140,7 +242,14 @@ class WaffyPipelineApplication:
                 )
             bot_assess = self.bot_engine.assess(record, tls_fingerprint=tls_fingerprint)
 
-            # 8. Aggregate Evidence into RequestAssessment
+            # 8. Detection: CSRF token validation (evidence only)
+            csrf_violation = self._check_csrf(record)
+
+            # 9. Detection: Credential-stuffing velocity (evidence only, from
+            # failures already recorded by prior responses -- see step 13)
+            cred_stuffing_ev = self._check_credential_stuffing(record)
+
+            # 10. Aggregate Evidence into RequestAssessment
             assessment = RequestAssessment(
                 request_id=record.request_id,
                 client_ip=record.client_ip,
@@ -149,18 +258,39 @@ class WaffyPipelineApplication:
                 positive_violations=pos_violations,
                 rate_limit_state=rate_limit_st,
                 bot_assessment=bot_assess,
+                csrf_violation=csrf_violation,
+                credential_stuffing_evidence=cred_stuffing_ev,
             )
 
-            # 9. Scoring: compute total score & threat level
+            # 11. Scoring: compute total score & threat level
             compute_assessment_score(assessment, self.config.engine)
 
-            # 10. Decision: mode-aware decision with evidence-maturity invariant
+            # 12. Decision: mode-aware decision with evidence-maturity invariant
             decision = self.decision_engine.decide(assessment, is_allowlisted=is_allowed)
 
-            # 11. Enforcement: Single authorized execution point
+            # 13. Enforcement: Single authorized execution point
             response = await self.executor.execute(record, raw_body, decision)
 
-            # 12. Response-side Cookie Attribute Enforcement
+            # 14. Credential-stuffing bookkeeping: if this request hit a
+            # configured login route and the response indicates a failed
+            # login, record it so *future* requests see updated velocity
+            # evidence in step 9. Never affects this request's own decision.
+            # Gated on decision.action being ALLOW/LOG so a waffy-generated
+            # BLOCK/CHALLENGE response (also status 403 by default) is never
+            # misread as the upstream application's own login failure.
+            if (
+                self.config.credential_stuffing.enabled
+                and self.credential_stuffing_detector.is_configured()
+                and decision.action in (EnforcementAction.ALLOW, EnforcementAction.LOG)
+                and record.path in self.config.credential_stuffing.login_failure_routes
+                and response.status_code in (401, 403)
+            ):
+                account = _extract_account_identifier(record)
+                self.credential_stuffing_detector.record_failed_attempt(
+                    record.client_ip, account=account
+                )
+
+            # 15. Response-side Cookie Attribute Enforcement
             if self.config.cookie_security.enabled and "set-cookie" in response.headers:
                 raw_cookie = response.headers["set-cookie"]
                 response.headers["set-cookie"] = self.cookie_rewriter.rewrite_set_cookie_header(

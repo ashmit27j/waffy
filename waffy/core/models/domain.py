@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -145,6 +145,24 @@ class BotAssessment(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class CsrfViolation(BaseModel):
+    """Evidence: a state-changing request failed CSRF token validation."""
+
+    route: str
+    reason: Literal["missing_token", "invalid_token"]
+
+
+class CredentialStuffingEvidence(BaseModel):
+    """Evidence: failed-login velocity already tripped for this request's
+    source IP or targeted account, based on failures recorded from prior
+    responses (never mutated by the current request's own outcome).
+    """
+
+    tripped: bool = False
+    scope: Literal["ip", "account", ""] = ""
+    reason: str = ""
+
+
 class RequestAssessment(BaseModel):
     """Aggregated security evidence collected across all inspection layers for one request."""
 
@@ -159,6 +177,8 @@ class RequestAssessment(BaseModel):
     )
     bot_assessment: BotAssessment | None = None
     rate_limit_state: RateLimitState | None = None
+    csrf_violation: CsrfViolation | None = None
+    credential_stuffing_evidence: CredentialStuffingEvidence | None = None
     total_score: float = Field(default=0.0, ge=0.0)
     threat_level: ThreatLevel = ThreatLevel.LOW
 
