@@ -84,19 +84,23 @@ def test_benign_corpus_false_positive_rate_is_measured_not_assumed() -> None:
         )
 
 
-def test_ssti_freemarker_runtime_gap_is_known_and_stable() -> None:
-    """Documents a real, measured signature gap rather than hiding it.
+def test_ssti_freemarker_runtime_gap_is_closed() -> None:
+    r"""Regression test for a real, previously-measured signature gap
+    (prompts/09-fix-ssti-signature-gap.md).
 
-    WAFFY-SSTI-001's `${...}` alternative requires `Runtime`/`exec`/a digit
-    expression immediately before the closing `}`; `${Runtime.getRuntime()}`
-    ends in `()}` so it does not match. This is not a bug in the corpus —
-    it's an honest true-positive-rate finding. If a future signature change
-    closes this gap, this test should be updated to expect 100%, not deleted.
+    WAFFY-SSTI-001's `${...}` alternative used to require `Runtime`/`exec`/a
+    digit expression *immediately* before the closing `}`; `${Runtime.
+    getRuntime()}` ends in `()}` so it didn't match, measuring 66.67%
+    (2/3) SSTI true-positive rate at PL1. The pattern was broadened to
+    `\$\{[^}]*(...)[^}]*\}` (bounded, non-backtracking) so the keyword can
+    appear anywhere inside the `${...}` expression, not just adjacent to
+    the closing brace. If this ever regresses, it means the signature was
+    weakened, not that the corpus needs adjusting to match.
     """
     results = _run_corpus_json()
     pl1 = next(r for r in results if r["paranoia_level"] == 1)
     ssti = pl1["categories"]["ssti"]
     assert ssti["total"] == 3
-    assert ssti["detected"] == 2
+    assert ssti["detected"] == 3
     undetected = [c["name"] for c in ssti["cases"] if not c["detected"]]
-    assert undetected == ["freemarker_runtime"]
+    assert undetected == []

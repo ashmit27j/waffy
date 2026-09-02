@@ -70,7 +70,15 @@ enabled = true
 [[rules]]
 id = "WAFFY-SSTI-001"
 category = "ssti"
-pattern = '''(\{\{\s*(\d+\s*[\*\+\-]\s*\d+|config|self|request|g|lipsum|cycler|joiner|namespace|__class__|__mro__|__subclasses__)\s*\}\})|(\$\{.*(\d+[\*\+]\d+|Runtime|exec)\})'''
+# Worst-case complexity: both alternatives are linear in input length. The
+# Jinja2/Twig branch has no nested quantifiers. The Freemarker/EL `${...}`
+# branch uses `[^}]*` (a bounded character class excluding the closing
+# brace) rather than unbounded `.*` on either side of the keyword
+# alternation, so a match attempt cannot backtrack across `}` boundaries or
+# re-scan already-rejected spans -- no catastrophic backtracking regardless
+# of how many `${...}` blocks or how much non-brace filler text is present.
+# Independently bounded by the engine's per-request regex time budget.
+pattern = '''(\{\{\s*(\d+\s*[\*\+\-]\s*\d+|config|self|request|g|lipsum|cycler|joiner|namespace|__class__|__mro__|__subclasses__)\s*\}\})|(\$\{[^}]*(\d+\s*[\*\+]\s*\d+|Runtime|exec)[^}]*\})'''
 paranoia_level = 1
 target_fields = ["query_params", "body_fields", "raw_body"]
 score_weight = 10.0
