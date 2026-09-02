@@ -54,6 +54,21 @@ class BaselineBuilder:
 
         X = np.array(feature_matrix, dtype=np.float64)
 
+        # Per-feature summary statistics over the training corpus, for
+        # operator review of a candidate model before promotion (see
+        # waffy/detection/anomaly/governance.py) -- computed here rather than
+        # in the governance layer since it's a property of the training data,
+        # not of the promotion workflow.
+        feature_summary: dict[str, dict[str, float]] = {
+            name: {
+                "mean": float(np.mean(X[:, i])),
+                "std": float(np.std(X[:, i])),
+                "min": float(np.min(X[:, i])),
+                "max": float(np.max(X[:, i])),
+            }
+            for i, name in enumerate(FEATURE_NAMES)
+        }
+
         # Train Isolation Forest
         model: IsolationForest = IsolationForest(
             contamination=self.contamination,  # type: ignore[reportArgumentType]
@@ -79,6 +94,7 @@ class BaselineBuilder:
             sample_count=sample_count,
             feature_names=FEATURE_NAMES,
             threshold=0.75,
+            feature_summary=feature_summary,
         )
 
         meta_file = out_path / meta_filename

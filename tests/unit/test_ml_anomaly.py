@@ -13,7 +13,24 @@ from waffy.detection.anomaly.features import (
     calculate_shannon_entropy,
     extract_features,
 )
+from waffy.detection.anomaly.governance import ModelGovernanceService
 from waffy.detection.anomaly.scorer import AnomalyScorer
+
+
+def _benign_corpus(
+    n: int, path: str = "/gov", offset: int = 0
+) -> list[tuple[HttpRequestRecord, bytes]]:
+    corpus: list[tuple[HttpRequestRecord, bytes]] = []
+    for i in range(offset, offset + n):
+        req = HttpRequestRecord(
+            method=HttpMethod.GET,
+            path=path,
+            query_string=f"q=term{i}&limit=10",
+            query_params={"q": [f"term{i}"], "limit": ["10"]},
+            client_ip="192.168.1.1",
+        )
+        corpus.append((req, b""))
+    return corpus
 
 
 def test_shannon_entropy_calculation() -> None:
@@ -139,3 +156,143 @@ def test_missing_or_corrupted_model_degradation(tmp_path: Path) -> None:
     req = HttpRequestRecord(method=HttpMethod.GET, path="/", client_ip="127.0.0.1")
     evidence = scorer.score("corrupt_route", req)
     assert evidence is None
+
+
+# ---------------------------------------------------------------------------
+# Model governance / promotion gate (prompts/10)
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_model_never_scores_until_promoted(tmp_path: Path) -> None:
+    """A freshly trained model must never silently become active."""
+    model_dir = tmp_path / "models"
+    governance = ModelGovernanceService(model_dir)
+    builder = BaselineBuilder(min_sample_size=30, random_state=42)
+
+    meta = governance.train_candidate(
+        builder, "route_gov", _benign_corpus(50), version="cand-1"
+    )
+    assert meta is not None
+    # Written into candidates/, never directly into model_dir.
+    assert (governance.candidates_dir / "route_gov_cand-1.joblib").is_file()
+    assert not (model_dir / "route_gov_cand-1.joblib").is_file()
+
+    # A scorer pointed at model_dir sees nothing for this route -- learning
+    # mode / no active model, clean signature-only fallback.
+    scorer = AnomalyScorer(model_dir)
+    assert "route_gov" not in scorer.models
+    req = HttpRequestRecord(method=HttpMethod.GET, path="/gov", client_ip="192.168.1.1")
+    assert scorer.score("route_gov", req) is None
+
+
+def test_candidate_model_metadata_visible_via_list_candidates() -> None:
+    """Pending-model visibility: what the management API surfaces to an
+    operator for review, per prompts/10's constraints.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        governance = ModelGovernanceService(Path(td) / "models")
+        builder = BaselineBuilder(min_sample_size=30, random_state=42)
+        governance.train_candidate(builder, "route_gov", _benign_corpus(40), version="cand-1")
+
+        candidates = governance.list_candidates()
+        assert len(candidates) == 1
+        cand = candidates[0]
+        assert cand.route_id == "route_gov"
+        assert cand.version == "cand-1"
+        assert cand.sample_count == 40
+        # Per-feature summary statistics for operator review.
+        assert set(cand.feature_summary.keys()) == set(FEATURE_NAMES)
+        for stats in cand.feature_summary.values():
+            assert set(stats.keys()) == {"mean", "std", "min", "max"}
+
+
+def test_promote_makes_candidate_active_and_scorer_reload_picks_it_up(
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "models"
+    governance = ModelGovernanceService(model_dir)
+    builder = BaselineBuilder(min_sample_size=30, random_state=42)
+
+    governance.train_candidate(builder, "route_gov", _benign_corpus(50), version="cand-1")
+    scorer = AnomalyScorer(model_dir)
+    assert "route_gov" not in scorer.models  # still pending
+
+    promoted = governance.promote("route_gov", "cand-1")
+    assert promoted
+
+    # Candidate files moved out of candidates/, now the only files in model_dir.
+    assert not (governance.candidates_dir / "route_gov_cand-1.joblib").is_file()
+    assert (model_dir / "route_gov_cand-1.joblib").is_file()
+    assert governance.list_candidates() == []
+
+    # The existing live scorer instance does NOT see it until reload_models()
+    # is called (mirrors the promotion endpoint's IPC-triggered reload).
+    assert "route_gov" not in scorer.models
+    scorer.reload_models()
+    assert "route_gov" in scorer.models
+
+    req = HttpRequestRecord(method=HttpMethod.GET, path="/gov", client_ip="192.168.1.1")
+    evidence = scorer.score("route_gov", req)
+    assert evidence is not None
+
+
+def test_reject_candidate_discards_without_ever_activating(tmp_path: Path) -> None:
+    model_dir = tmp_path / "models"
+    governance = ModelGovernanceService(model_dir)
+    builder = BaselineBuilder(min_sample_size=30, random_state=42)
+
+    governance.train_candidate(builder, "route_gov", _benign_corpus(50), version="cand-1")
+    assert len(governance.list_candidates()) == 1
+
+    rejected = governance.reject("route_gov", "cand-1")
+    assert rejected
+    assert governance.list_candidates() == []
+    # Promoting the now-deleted candidate fails cleanly.
+    assert governance.promote("route_gov", "cand-1") is False
+
+    scorer = AnomalyScorer(model_dir)
+    assert "route_gov" not in scorer.models
+
+
+def test_active_model_scores_unaffected_while_candidate_pending(tmp_path: Path) -> None:
+    """The currently-active model must keep scoring normally while a new
+    candidate for the same route awaits operator review.
+    """
+    model_dir = tmp_path / "models"
+    builder = BaselineBuilder(min_sample_size=30, random_state=42)
+
+    # Directly train an "already active" model straight into model_dir,
+    # simulating a route that was promoted in a prior session.
+    active_meta = builder.train_and_save("route_gov", _benign_corpus(50), model_dir, version="v1")
+    assert active_meta is not None
+
+    scorer = AnomalyScorer(model_dir)
+    assert "route_gov" in scorer.models
+    req = HttpRequestRecord(method=HttpMethod.GET, path="/gov", client_ip="192.168.1.1")
+    baseline_evidence = scorer.score("route_gov", req)
+    assert baseline_evidence is not None
+
+    governance = ModelGovernanceService(model_dir)
+    governance.train_candidate(
+        builder, "route_gov", _benign_corpus(60, offset=1000), version="v2-candidate"
+    )
+
+    # Active model keeps scoring identically -- the pending candidate never
+    # touched it.
+    still_active_evidence = scorer.score("route_gov", req)
+    assert still_active_evidence is not None
+    assert still_active_evidence.model_version == "v1"
+    assert still_active_evidence.anomaly_score == baseline_evidence.anomaly_score
+
+    comparison = governance.compare_to_active(governance.list_candidates()[0])
+    assert comparison["active_exists"] is True
+    assert comparison["active_version"] == "v1"
+    assert comparison["candidate_sample_count"] == 60
+
+
+def test_promote_nonexistent_candidate_returns_false(tmp_path: Path) -> None:
+    governance = ModelGovernanceService(tmp_path / "models")
+    assert governance.promote("no_such_route", "v1") is False
+    assert governance.reject("no_such_route", "v1") is False

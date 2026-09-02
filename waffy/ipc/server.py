@@ -36,6 +36,8 @@ from waffy.config.models import WaffyConfig
 from waffy.core.enums import EnforcementMode
 from waffy.core.interfaces import RuleStore
 from waffy.core.models.domain import RequestAssessment, SecurityEvent
+from waffy.detection.anomaly.governance import ModelGovernanceService
+from waffy.detection.anomaly.scorer import AnomalyScorer
 from waffy.enforcement.allowlist import AllowlistManager
 from waffy.enforcement.killswitch import KillSwitchService
 from waffy.ipc.protocol import (
@@ -48,16 +50,22 @@ from waffy.ipc.protocol import (
     GetModeResponse,
     IpcRequest,
     IpcResponse,
+    PromoteModelRequest,
+    PromoteModelResponse,
     ReadAllowlistRequest,
     ReadAllowlistResponse,
     ReadBansRequest,
     ReadBansResponse,
+    ReadCandidateModelsRequest,
+    ReadCandidateModelsResponse,
     ReadEventsRequest,
     ReadEventsResponse,
     ReadRequestsRequest,
     ReadRequestsResponse,
     ReadVirtualPatchesRequest,
     ReadVirtualPatchesResponse,
+    RejectModelRequest,
+    RejectModelResponse,
     RejectPendingRequest,
     RejectPendingResponse,
     ReloadRulesRequest,
@@ -113,6 +121,17 @@ class IpcServer:
         Shared ``KillSwitchService`` for emergency mode changes.
     state_store:
         Ring-buffer of recent events and assessments for read queries.
+    model_governance:
+        Optional shared ``ModelGovernanceService`` for anomaly-model
+        candidate listing/promotion/rejection (prompts/10). If ``None``
+        (the default), the three ``*_model`` commands respond with a clear
+        "not configured" error rather than crashing — a deployment that
+        never trains anomaly models need not wire this up.
+    anomaly_scorer:
+        Optional shared ``AnomalyScorer`` instance — the *same* one the live
+        pipeline scores requests against. When set, ``promote_model``
+        calls ``reload_models()`` on it so a promotion takes effect
+        immediately, without a process restart.
     """
 
     def __init__(
@@ -122,12 +141,16 @@ class IpcServer:
         allowlist_manager: AllowlistManager,
         killswitch: KillSwitchService,
         state_store: IpcStateStore,
+        model_governance: ModelGovernanceService | None = None,
+        anomaly_scorer: AnomalyScorer | None = None,
     ) -> None:
         self.config = config
         self.rule_store = rule_store
         self.allowlist_manager = allowlist_manager
         self.killswitch = killswitch
         self.state_store = state_store
+        self.model_governance = model_governance
+        self.anomaly_scorer = anomaly_scorer
         self._server: asyncio.AbstractServer | None = None
         self._socket_path = Path(config.api.ipc_socket_path)
 
@@ -284,6 +307,51 @@ class IpcServer:
             if isinstance(request, RejectPendingRequest):
                 removed = await self.rule_store.remove_ban(request.ban_id)
                 return RejectPendingResponse(request_id=rid, ok=removed)
+
+            if isinstance(request, ReadCandidateModelsRequest):
+                if self.model_governance is None:
+                    return ReadCandidateModelsResponse(
+                        request_id=rid, ok=True, candidates=[]
+                    )
+                candidates = self.model_governance.list_candidates()
+                dumped = [
+                    {
+                        **c.model_dump(mode="json"),
+                        "active_comparison": self.model_governance.compare_to_active(c),
+                    }
+                    for c in candidates
+                ]
+                return ReadCandidateModelsResponse(request_id=rid, ok=True, candidates=dumped)
+
+            if isinstance(request, PromoteModelRequest):
+                if self.model_governance is None:
+                    return PromoteModelResponse(
+                        request_id=rid, ok=False, error="Model governance not configured"
+                    )
+                promoted = self.model_governance.promote(request.route_id, request.version)
+                if promoted and self.anomaly_scorer is not None:
+                    self.anomaly_scorer.reload_models()
+                if not promoted:
+                    return PromoteModelResponse(
+                        request_id=rid,
+                        ok=False,
+                        error=f"No candidate model {request.route_id}/{request.version}",
+                    )
+                return PromoteModelResponse(request_id=rid, ok=True)
+
+            if isinstance(request, RejectModelRequest):
+                if self.model_governance is None:
+                    return RejectModelResponse(
+                        request_id=rid, ok=False, error="Model governance not configured"
+                    )
+                rejected = self.model_governance.reject(request.route_id, request.version)
+                if not rejected:
+                    return RejectModelResponse(
+                        request_id=rid,
+                        ok=False,
+                        error=f"No candidate model {request.route_id}/{request.version}",
+                    )
+                return RejectModelResponse(request_id=rid, ok=True)
 
             if isinstance(request, TriggerKillswitchRequest):
                 await self.killswitch.engage(reason=request.reason)

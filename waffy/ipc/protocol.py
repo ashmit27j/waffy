@@ -23,6 +23,9 @@ Supported commands
 ``remove_allowlist``     → remove an allowlist entry by target IP/CIDR
 ``approve_pending``      → approve a ``PENDING_APPROVAL`` ban
 ``reject_pending``       → reject a ``PENDING_APPROVAL`` ban
+``read_candidate_models`` → list pending anomaly-model candidates awaiting promotion
+``promote_model``        → promote a candidate anomaly model to active (prompts/10)
+``reject_model``         → reject and discard a candidate anomaly model (prompts/10)
 ``trigger_killswitch``   → engage emergency kill-switch
 ``reload_rules``         → hot-reload signature rule set from disk
 ``get_mode``             → read current ``EnforcementMode``
@@ -154,6 +157,39 @@ class RejectPendingResponse(IpcResponse):
 
 
 # ---------------------------------------------------------------------------
+# Anomaly model governance (prompts/10)
+# ---------------------------------------------------------------------------
+
+
+class ReadCandidateModelsRequest(IpcRequest):
+    command: str = "read_candidate_models"
+
+
+class ReadCandidateModelsResponse(IpcResponse):
+    candidates: list[dict[str, Any]] = Field(default_factory=lambda: [])
+
+
+class PromoteModelRequest(IpcRequest):
+    command: str = "promote_model"
+    route_id: str
+    version: str
+
+
+class PromoteModelResponse(IpcResponse):
+    pass
+
+
+class RejectModelRequest(IpcRequest):
+    command: str = "reject_model"
+    route_id: str
+    version: str
+
+
+class RejectModelResponse(IpcResponse):
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Control requests
 # ---------------------------------------------------------------------------
 
@@ -208,6 +244,9 @@ AnyIpcRequest = (
     | RemoveAllowlistRequest
     | ApprovePendingRequest
     | RejectPendingRequest
+    | ReadCandidateModelsRequest
+    | PromoteModelRequest
+    | RejectModelRequest
     | TriggerKillswitchRequest
     | ReloadRulesRequest
     | GetModeRequest
@@ -224,6 +263,9 @@ _COMMAND_MAP: dict[str, type[IpcRequest]] = {
     "remove_allowlist": RemoveAllowlistRequest,
     "approve_pending": ApprovePendingRequest,
     "reject_pending": RejectPendingRequest,
+    "read_candidate_models": ReadCandidateModelsRequest,
+    "promote_model": PromoteModelRequest,
+    "reject_model": RejectModelRequest,
     "trigger_killswitch": TriggerKillswitchRequest,
     "reload_rules": ReloadRulesRequest,
     "get_mode": GetModeRequest,
@@ -267,6 +309,12 @@ __all__ = [
     "ApprovePendingResponse",
     "RejectPendingRequest",
     "RejectPendingResponse",
+    "ReadCandidateModelsRequest",
+    "ReadCandidateModelsResponse",
+    "PromoteModelRequest",
+    "PromoteModelResponse",
+    "RejectModelRequest",
+    "RejectModelResponse",
     "TriggerKillswitchRequest",
     "TriggerKillswitchResponse",
     "ReloadRulesRequest",

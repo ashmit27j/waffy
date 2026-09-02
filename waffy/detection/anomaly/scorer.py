@@ -66,6 +66,21 @@ class AnomalyScorer:
                     e,
                 )
 
+    def reload_models(self) -> None:
+        """Re-scan ``model_dir`` and reload all models/metadata from scratch.
+
+        Used after a candidate model is promoted (see
+        ``waffy/detection/anomaly/governance.py``) so a live scorer picks up
+        the newly-active model without a process restart. Reuses the same
+        fault-tolerant ``load_models()`` path used at construction -- a
+        corrupt or missing artifact degrades that one route to
+        signature-only, it never crashes the reload. Never touches scoring
+        math or feature extraction.
+        """
+        self.models = {}
+        self.metadata = {}
+        self.load_models()
+
     def score(
         self,
         route_id: str,

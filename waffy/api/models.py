@@ -115,6 +115,17 @@ class ApproveRejectRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Anomaly model governance (prompts/10)
+# ---------------------------------------------------------------------------
+
+
+class CandidateModelsResponse(BaseModel):
+    ok: bool = True
+    candidates: list[dict[str, Any]] = Field(default_factory=lambda: list[dict[str, Any]]())
+    count: int = 0
+
+
+# ---------------------------------------------------------------------------
 # Mode management
 # ---------------------------------------------------------------------------
 
@@ -177,6 +188,7 @@ __all__ = [
     "VirtualPatchesResponse",
     "PendingResponse",
     "ApproveRejectRequest",
+    "CandidateModelsResponse",
     "ModeResponse",
     "SetModeRequest",
     "KillswitchRequest",

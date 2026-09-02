@@ -182,6 +182,72 @@ Reject and discard a pending ban.
 
 ---
 
+### Anomaly Model Governance
+
+Human-approval gate between a newly trained ML anomaly baseline and it
+becoming the active scoring model for a route (prompts/10). A freshly
+trained model always lands in a **candidate** state and is never used for
+live scoring until explicitly promoted through this API. There is no
+automated drift detection that auto-approves or auto-rejects a candidate —
+promotion is a human-review-only decision, consistent with the project's
+evidence-only philosophy (see `CLAUDE.md`).
+
+#### `GET /api/v1/models/candidates`
+
+List anomaly-model candidates awaiting operator promotion. Each entry is the
+candidate's `ModelMetadata` (route, version, training window, sample count,
+per-feature summary statistics) plus an `active_comparison` object — a
+deterministic, non-ML diff against the route's currently-active model (if
+any), so an operator can catch a suspicious retrain (e.g. a big shift in a
+feature's mean, or a suspiciously small sample count) before promoting it.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "count": 1,
+  "candidates": [
+    {
+      "model_id": "checkout_route",
+      "route_id": "checkout_route",
+      "version": "20260903T101500Z",
+      "trained_at": "2026-09-03T10:15:00Z",
+      "sample_count": 5000,
+      "feature_names": ["request_length", "..."],
+      "threshold": 0.75,
+      "feature_summary": {
+        "request_length": { "mean": 128.4, "std": 40.1, "min": 12.0, "max": 900.0 }
+      },
+      "active_comparison": {
+        "active_exists": true,
+        "active_version": "20260820T090000Z",
+        "active_sample_count": 4800,
+        "candidate_sample_count": 5000,
+        "sample_count_delta": 200,
+        "feature_mean_deltas": { "request_length": 3.2 }
+      }
+    }
+  ]
+}
+```
+
+If no model has ever been active for that route, `active_comparison` is
+`{ "active_exists": false }`.
+
+#### `POST /api/v1/models/candidates/{route_id}/{version}/promote`
+
+Promote a candidate model to active for its route in waffy-core, replacing
+that route's prior active model. If waffy-core has a live `AnomalyScorer`
+wired to the same `ModelGovernanceService`, the promotion takes effect
+immediately — no process restart required. Returns `502` (IPC failure
+surfaced) if no such candidate exists.
+
+#### `POST /api/v1/models/candidates/{route_id}/{version}/reject`
+
+Reject and discard a candidate model's files without ever activating it.
+
+---
+
 ### Enforcement Mode
 
 #### `GET /api/v1/mode`

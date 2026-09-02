@@ -35,6 +35,9 @@ GET  /api/v1/patches                 — virtual patch rules
 GET  /api/v1/pending                 — pending-approval queue
 POST /api/v1/pending/{ban_id}/approve — approve pending ban
 POST /api/v1/pending/{ban_id}/reject  — reject pending ban
+GET  /api/v1/models/candidates       — pending anomaly-model candidates awaiting promotion
+POST /api/v1/models/candidates/{route_id}/{version}/promote — promote a candidate model
+POST /api/v1/models/candidates/{route_id}/{version}/reject  — reject a candidate model
 GET  /api/v1/mode                    — get current enforcement mode
 POST /api/v1/mode                    — set enforcement mode
 POST /api/v1/killswitch              — engage emergency kill-switch
@@ -56,6 +59,7 @@ from waffy.api.models import (
     AllowlistResponse,
     BanActionResponse,
     BanListResponse,
+    CandidateModelsResponse,
     CreateAllowlistRequest,
     EventsResponse,
     HealthResponse,
@@ -368,6 +372,72 @@ def build_app(
                 detail=str(exc),
             ) from exc
         return OkResponse(ok=True, message=f"Ban {ban_id} rejected.")
+
+    # ------------------------------------------------------------------ #
+    # Anomaly model governance (prompts/10)                                #
+    # ------------------------------------------------------------------ #
+
+    @app.get(
+        "/api/v1/models/candidates",
+        response_model=CandidateModelsResponse,
+        tags=["models"],
+        dependencies=[Depends(auth)],
+    )
+    async def list_candidate_models() -> CandidateModelsResponse:
+        """List anomaly-model candidates awaiting operator promotion.
+
+        Each candidate carries its training metadata (sample count, training
+        window, per-feature summary statistics) plus an ``active_comparison``
+        against the route's currently-active model, if any -- everything an
+        operator needs to catch a suspicious retrain before promoting it.
+        Never auto-approves or auto-rejects; this is a human-review-only gate.
+        """
+        try:
+            candidates = await ipc.read_candidate_models()
+        except IpcClientError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+        return CandidateModelsResponse(candidates=candidates, count=len(candidates))
+
+    @app.post(
+        "/api/v1/models/candidates/{route_id}/{version}/promote",
+        response_model=OkResponse,
+        tags=["models"],
+        dependencies=[Depends(auth)],
+    )
+    async def promote_candidate_model(route_id: str, version: str) -> OkResponse:
+        """Promote a candidate model to active for its route in waffy-core.
+
+        Replaces that route's prior active model. If a live anomaly scorer
+        is wired in waffy-core, this takes effect immediately.
+        """
+        try:
+            await ipc.promote_model(route_id=route_id, version=version)
+        except IpcClientError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(exc),
+            ) from exc
+        return OkResponse(ok=True, message=f"Model {route_id}/{version} promoted to active.")
+
+    @app.post(
+        "/api/v1/models/candidates/{route_id}/{version}/reject",
+        response_model=OkResponse,
+        tags=["models"],
+        dependencies=[Depends(auth)],
+    )
+    async def reject_candidate_model(route_id: str, version: str) -> OkResponse:
+        """Reject and discard a candidate model without ever activating it."""
+        try:
+            await ipc.reject_model(route_id=route_id, version=version)
+        except IpcClientError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(exc),
+            ) from exc
+        return OkResponse(ok=True, message=f"Model {route_id}/{version} rejected.")
 
     # ------------------------------------------------------------------ #
     # Enforcement mode                                                     #

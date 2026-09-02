@@ -316,3 +316,13 @@ class ModelMetadata(BaseModel):
     sample_count: int = Field(ge=0)
     feature_names: list[str] = Field(default_factory=list)
     threshold: float = 0.75
+    feature_summary: dict[str, dict[str, float]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-feature training-corpus summary statistics (mean/std/min/max), "
+            "keyed by feature name. Populated by BaselineBuilder.train_and_save "
+            "for operator review of a candidate model before promotion -- see "
+            "waffy/detection/anomaly/governance.py. Empty for models trained "
+            "before this field existed."
+        ),
+    )

@@ -116,6 +116,9 @@ def _make_ipc_mock(**overrides: Any) -> AsyncMock:
     ipc.remove_allowlist.return_value = True
     ipc.approve_pending.return_value = None
     ipc.reject_pending.return_value = None
+    ipc.read_candidate_models.return_value = []
+    ipc.promote_model.return_value = None
+    ipc.reject_model.return_value = None
     ipc.trigger_killswitch.return_value = None
     ipc.reload_rules.return_value = 42
     ipc.set_mode.return_value = ("SHADOW", "ACTIVE")
@@ -301,6 +304,53 @@ class TestMutatingEndpoints:
         resp = client.post("/api/v1/pending/ban-xyz/reject", headers=_MGMT_HEADERS)
         assert resp.status_code == 200
         ipc.reject_pending.assert_called_once_with(ban_id="ban-xyz")
+
+    def test_list_candidate_models(self) -> None:
+        ipc = _make_ipc_mock()
+        ipc.read_candidate_models.return_value = [
+            {
+                "model_id": "route_gov",
+                "route_id": "route_gov",
+                "version": "cand-1",
+                "sample_count": 50,
+                "active_comparison": {"active_exists": False},
+            }
+        ]
+        client = _make_client(ipc=ipc)
+        resp = client.get("/api/v1/models/candidates", headers=_MGMT_HEADERS)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["candidates"][0]["route_id"] == "route_gov"
+
+    def test_promote_candidate_model(self) -> None:
+        ipc = _make_ipc_mock()
+        client = _make_client(ipc=ipc)
+        resp = client.post(
+            "/api/v1/models/candidates/route_gov/cand-1/promote", headers=_MGMT_HEADERS
+        )
+        assert resp.status_code == 200
+        ipc.promote_model.assert_called_once_with(route_id="route_gov", version="cand-1")
+
+    def test_reject_candidate_model(self) -> None:
+        ipc = _make_ipc_mock()
+        client = _make_client(ipc=ipc)
+        resp = client.post(
+            "/api/v1/models/candidates/route_gov/cand-1/reject", headers=_MGMT_HEADERS
+        )
+        assert resp.status_code == 200
+        ipc.reject_model.assert_called_once_with(route_id="route_gov", version="cand-1")
+
+    def test_promote_candidate_model_missing_surfaces_error(self) -> None:
+        ipc = _make_ipc_mock()
+        ipc.promote_model.side_effect = IpcClientError(
+            "promote_model failed: No candidate model route_gov/bogus"
+        )
+        client = _make_client(ipc=ipc)
+        resp = client.post(
+            "/api/v1/models/candidates/route_gov/bogus/promote", headers=_MGMT_HEADERS
+        )
+        assert resp.status_code == 502
 
     def test_reload_rules(self) -> None:
         ipc = _make_ipc_mock()

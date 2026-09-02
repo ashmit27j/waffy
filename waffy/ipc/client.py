@@ -27,16 +27,22 @@ from waffy.ipc.protocol import (
     ApprovePendingResponse,
     GetModeRequest,
     GetModeResponse,
+    PromoteModelRequest,
+    PromoteModelResponse,
     ReadAllowlistRequest,
     ReadAllowlistResponse,
     ReadBansRequest,
     ReadBansResponse,
+    ReadCandidateModelsRequest,
+    ReadCandidateModelsResponse,
     ReadEventsRequest,
     ReadEventsResponse,
     ReadRequestsRequest,
     ReadRequestsResponse,
     ReadVirtualPatchesRequest,
     ReadVirtualPatchesResponse,
+    RejectModelRequest,
+    RejectModelResponse,
     RejectPendingRequest,
     RejectPendingResponse,
     ReloadRulesRequest,
@@ -214,6 +220,43 @@ class IpcClient:
         resp = RejectPendingResponse(**raw)
         if not resp.ok:
             raise IpcClientError(f"reject_pending failed: {resp.error}")
+
+    async def read_candidate_models(self) -> list[dict[str, Any]]:
+        raw = await self._call(
+            ReadCandidateModelsRequest(
+                request_id=self._new_id(), command="read_candidate_models"
+            ).model_dump()
+        )
+        resp = ReadCandidateModelsResponse(**raw)
+        if not resp.ok:
+            raise IpcClientError(f"read_candidate_models failed: {resp.error}")
+        return list(resp.candidates)
+
+    async def promote_model(self, route_id: str, version: str) -> None:
+        raw = await self._call(
+            PromoteModelRequest(
+                request_id=self._new_id(),
+                command="promote_model",
+                route_id=route_id,
+                version=version,
+            ).model_dump()
+        )
+        resp = PromoteModelResponse(**raw)
+        if not resp.ok:
+            raise IpcClientError(f"promote_model failed: {resp.error}")
+
+    async def reject_model(self, route_id: str, version: str) -> None:
+        raw = await self._call(
+            RejectModelRequest(
+                request_id=self._new_id(),
+                command="reject_model",
+                route_id=route_id,
+                version=version,
+            ).model_dump()
+        )
+        resp = RejectModelResponse(**raw)
+        if not resp.ok:
+            raise IpcClientError(f"reject_model failed: {resp.error}")
 
     async def trigger_killswitch(self, reason: str = "API kill-switch request") -> None:
         raw = await self._call(
