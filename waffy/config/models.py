@@ -99,6 +99,17 @@ class BotDetectionConfig(BaseModel):
     )
     scanner_weight: float = Field(default=25.0, ge=0.0)
     timing_regularity_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
+    known_bad_tls_fingerprints: list[str] = Field(
+        default_factory=lambda: list[str](),
+        description=(
+            "Locally-managed, versioned list of TLS ClientHello fingerprints "
+            "(canonical JA3 hashes, or waffy-tlsfp-v1:-prefixed values from "
+            "waffy.proxy.tls_fingerprint.compute_fingerprint_from_ssl_object) "
+            "known to belong to malicious tooling. Empty by default — this is "
+            "not a live threat-intel feed, just a config-managed local list an "
+            "operator populates and versions themselves."
+        ),
+    )
 
 
 class CookieSecurityConfig(BaseModel):

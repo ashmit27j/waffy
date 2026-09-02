@@ -21,7 +21,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 | **7 (Phase 06)** | Rate limiting, DoS, bot detection, session/CSRF | **DONE** | All implemented & tested ✓ |
 | **8 (Phase 07)** | Deployment proxy modes, ASGI middleware, IPC | **DONE** | All deliverables implemented & tested ✓ |
 | **9 (Phase 08)** | Management API, control panel, SIEM/metrics | **DONE** | All deliverables implemented & tested ✓ |
-| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus (prompts/01), benchmarks (prompts/02), real TLS handshake test (prompts/03) done; JA3/JA4, state persistence, HTTP/2 coverage, config validation warnings still pending (prompts/04-07) |
+| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus (prompts/01), benchmarks (prompts/02), real TLS handshake test (prompts/03), JA3/JA4 fingerprinting (prompts/04) done; state persistence, HTTP/2 coverage, config validation warnings still pending (prompts/05-07) |
 | **11 (Phase 10)** | Release polish, interoperability documentation | **DONE** | Documentation and release polish complete ✓ |
 
 ---
@@ -78,7 +78,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 
 ### Phase 6 (07-phase-06-session-bot-ratelimit.md) — Rate Limiting, Bot Detection, Session/Cookie Security
 - **`waffy/detection/ratelimit/engine.py`**: **Tested** (Bounded sliding-window limiters for IP, session, route, and global scopes; LRU eviction for bounded memory; produces `RateLimitState` evidence only)
-- **`waffy/detection/bot/engine.py`**: **Tested** (Multi-signal bot heuristics: scanner UA, honeypot endpoint trap, timing regularity tracker, JA3 placeholder)
+- **`waffy/detection/bot/engine.py`**: **Tested** (Multi-signal bot heuristics: scanner UA, honeypot endpoint trap, timing regularity tracker; TLS fingerprint check now matches against a config-managed `known_bad_tls_fingerprints` list — see the Phase 9 / Task 04 entry below for what changed and its honest scope; no longer a hardcoded placeholder-string comparison)
 - **`waffy/detection/session/services.py`**: **Tested** (Cookie attribute rewriter for Secure/HttpOnly/SameSite enforcement; HMAC-signed CSRF token generation/verification; credential stuffing velocity detector)
 - **`waffy/http/limits.py`**: **Tested** (Transport resource protection: max in-flight requests, per-IP concurrency, slowloris/slow-POST minimum upload rate guard, idle timeout)
 - **Config models**: **Tested** (`RateLimitConfig`, `BotDetectionConfig`, `CookieSecurityConfig`, `CredentialStuffingConfig`, `HttpLimitsConfig` all added to `WaffyConfig`)
@@ -141,6 +141,20 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **Dependency choice**: cert generation uses the system `openssl` CLI via `subprocess`, not a new Python dependency (`cryptography`) — avoids the CLAUDE.md "new dependency needs explicit justification" question entirely for a one-off test fixture. The test skips (not fails) if `openssl` isn't on `PATH`.
 - **TLS version floor**: unchanged — `build_ssl_context` still enforces `TLSv1_2` minimum; this task only added a consumer/verifier, never touched that function.
 - **`docs/PROGRESS.md`**: Phase 7 standalone-proxy entry and this entry updated from `Environment-dependent` to `Tested` (**Implemented**)
+
+### Phase 9 / Task 04 (prompts/04-ja3-fingerprint-extraction.md) — Real JA3/JA4 TLS Fingerprint Extraction
+
+- **`waffy/proxy/tls_fingerprint.py`** (new module): **Tested**.
+  - `parse_client_hello()` + `compute_ja3()`: **canonical, byte-perfect JA3** (RFC 8446 ClientHello parsing, RFC 8701 GREASE filtering, MD5 of the standard 5-group signature string) computed from raw ClientHello bytes. Unit-tested against a **real** ClientHello captured from a real local Python TLS client over a `socket.socketpair()` (`test_ja3_computed_from_real_captured_client_hello`), plus malformed-input and GREASE-filtering tests.
+  - `compute_fingerprint_from_ssl_object()`: a **real-signal, NOT byte-identical to canonical JA3** fingerprint (`waffy-tlsfp-v1:` prefix) derived from a completed handshake's post-handshake `SSLObject`/`SSLSocket` (version, cipher, `shared_ciphers()`, ALPN) — this is what's actually wired into production, because Python's `ssl` module doesn't expose raw pre-handshake ClientHello bytes without a parallel hand-rolled TLS listener (a larger, explicitly out-of-scope follow-up — see `docs/ARCHITECTURE.md`). Tested end-to-end against a real completed local TLS handshake (`test_bot_engine_matches_real_captured_tls_fingerprint`), and tested to degrade to `None` on any failure (`test_compute_fingerprint_from_ssl_object_degrades_gracefully`).
+  - `TlsFingerprintRegistry`: bounded LRU `(peer_ip, peer_port) -> fingerprint` map, same pattern as `TimingRegularityTracker`. Tested for bounded eviction and `forget()`.
+  - `build_ja3_capturing_protocol()` / `build_standalone_uvicorn_config()`: subclasses uvicorn's internal `H11Protocol` (only overriding `connection_made`/`connection_lost` to additionally record/forget a fingerprint — never touches HTTP parsing) and wires it into a `uvicorn.Config` alongside `build_ssl_context()`'s real TLS context. Degrades to uvicorn's default protocol (no capture, not fatal) if the internal class can't be imported. **Implemented**, not independently integration-tested against a real bound uvicorn TLS socket in this session (the plumbing from `SSLObject -> fingerprint -> registry -> pipeline` is proven end-to-end via the socketpair-based tests instead) — **Environment-dependent** for a full live-uvicorn-listener confirmation.
+- **`waffy/config/models.py::BotDetectionConfig.known_bad_tls_fingerprints`** (new field): **Tested**. Empty-by-default, operator-managed local list — explicitly not a live threat-intel feed, per this task's constraints.
+- **`waffy/detection/bot/engine.py`**: **Tested**. Replaced the hardcoded `"bad_ja3_fingerprint"`/`"bad_ja4_fingerprint"` placeholder-string comparison with a real check against `config.known_bad_tls_fingerprints`. Scoring weights in `waffy/engine/scoring.py` untouched, per constraints. Evidence-only boundary preserved — `assess()` still only returns `BotAssessment`.
+- **`waffy/http/pipeline.py`**: **Tested**. New optional constructor param `tls_fingerprint_lookup: Callable[[str, int], str | None] | None = None`, defaulting to `None` (fully backward compatible — all 96 pre-existing tests still pass unmodified). When set, looked up per-request by `(client_ip, client_port)` and passed into `bot_engine.assess()`. Kept as a plain callable rather than a proxy-layer import, preserving the `core -> config -> http -> ... -> proxy` one-way dependency flow. Tested end-to-end (`test_pipeline_wires_tls_fingerprint_lookup_into_bot_assessment`).
+- **Dependency decision**: **no new dependency added** — full justification, including why canonical byte-perfect JA3 isn't yet the production path and what a follow-up would need, is in `docs/ARCHITECTURE.md` (new file, created by this task).
+- **Pre-existing gap noticed, not fixed here (out of scope for this task)**: `config/default_config.toml`'s `[bot]` section doesn't match `WaffyConfig.bot_detection`'s expected `[bot_detection]` section name, so bot-detection TOML config is currently silently ignored at load time regardless of this task. Documented in `docs/ARCHITECTURE.md`, flagged as a natural fit for prompts/07's config-validation-warnings task.
+- **`docs/PROGRESS.md`**: this entry + the bot/engine.py line above updated (**Implemented**)
 
 ### Final Release Quality Gate (Phase 10)
 

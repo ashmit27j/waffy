@@ -130,11 +130,15 @@ class BotDetectionEngine:
             details["missing_standard_browser_headers"] = True
             score += 0.3
 
-        # 4. TLS Fingerprint check (JA3/JA4 when available)
+        # 4. TLS Fingerprint check (JA3/JA4 when available — see
+        # waffy/proxy/tls_fingerprint.py for how tls_fingerprint is derived;
+        # absent/unavailable fingerprints (e.g. plaintext mode, or a listener
+        # without capture wired in) stay neutral, never penalized.
         if tls_fingerprint:
             details["tls_fingerprint"] = tls_fingerprint
-            if tls_fingerprint in ("bad_ja3_fingerprint", "bad_ja4_fingerprint"):
+            if tls_fingerprint in self.config.known_bad_tls_fingerprints:
                 score += 0.7
+                details["tls_fingerprint_known_bad"] = True
 
         # 5. Timing Regularity (Machine-regular intervals)
         cov = self.timing_tracker.record_and_get_cov(request.client_ip, now)

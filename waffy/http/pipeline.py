@@ -4,7 +4,7 @@ transport -> parse -> normalize -> detect (signatures + positive + anomaly + bot
 """
 
 import logging
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from typing import Any
 
 from starlette.requests import Request
@@ -43,6 +43,7 @@ class WaffyPipelineApplication:
         anomaly_scorer: AnomalyScorer | None = None,
         challenge_verifier: ChallengeVerifier | None = None,
         event_sink: EventSink | None = None,
+        tls_fingerprint_lookup: Callable[[str, int], str | None] | None = None,
     ) -> None:
         self.config = config
         self.upstream = upstream_client
@@ -51,6 +52,16 @@ class WaffyPipelineApplication:
         self.positive_engine = positive_engine
         self.anomaly_scorer = anomaly_scorer
         self.event_sink = event_sink
+        # Optional: looks up a real, connection-level TLS ClientHello
+        # fingerprint by (client_ip, client_port). Supplied by
+        # waffy/proxy/standalone.py's TlsFingerprintRegistry.get in TLS
+        # standalone mode; None (the default) in plaintext/middleware modes,
+        # matching plaintext.py's documented "TLS signals absent, stays
+        # neutral" contract. Kept as a plain Callable — not a direct import
+        # of the proxy layer — to preserve the one-way
+        # core -> config -> http -> detection -> engine -> enforcement -> proxy
+        # module dependency flow from CLAUDE.md.
+        self.tls_fingerprint_lookup = tls_fingerprint_lookup
 
         self.resource_protector = TransportResourceProtector(config.http_limits)
         self.rate_limit_engine = RateLimitEngine(config.rate_limiting)
@@ -120,8 +131,14 @@ class WaffyPipelineApplication:
             # 6. Detection: Rate Limiting
             rate_limit_st = self.rate_limit_engine.evaluate(record)
 
-            # 7. Detection: Bot assessment
-            bot_assess = self.bot_engine.assess(record)
+            # 7. Detection: Bot assessment (including real TLS fingerprint
+            # evidence when a lookup was wired in for this listener)
+            tls_fingerprint = None
+            if self.tls_fingerprint_lookup is not None:
+                tls_fingerprint = self.tls_fingerprint_lookup(
+                    record.client_ip, record.client_port
+                )
+            bot_assess = self.bot_engine.assess(record, tls_fingerprint=tls_fingerprint)
 
             # 8. Aggregate Evidence into RequestAssessment
             assessment = RequestAssessment(

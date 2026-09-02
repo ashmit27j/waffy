@@ -25,11 +25,9 @@ Coverage
 import asyncio
 import json
 import os
-import shutil
 import socket
 import ssl
 import stat
-import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -40,6 +38,7 @@ import pytest
 import uvicorn
 
 from tests.helpers.fakes import FakeRuleStore, FakeUpstreamClient
+from tests.helpers.tls import generate_self_signed_cert, openssl_available
 from waffy.config.models import WaffyConfig
 from waffy.core.enums import EnforcementMode, ParanoiaLevel
 from waffy.detection.positive.models import PositiveSecurityEngine
@@ -531,47 +530,6 @@ async def test_core_daemon_graceful_drain_in_flight() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _openssl_available() -> bool:
-    return shutil.which("openssl") is not None
-
-
-def _generate_self_signed_cert(directory: Path) -> tuple[Path, Path]:
-    """Generate a throwaway self-signed cert/key pair via the ``openssl`` CLI.
-
-    Uses the system ``openssl`` binary rather than adding a new Python
-    dependency (e.g. ``cryptography``) purely for a one-off test fixture —
-    per CLAUDE.md, a new dependency needs explicit justification, and this
-    avoids needing one at all. Never committed: written to a pytest ``tmp_path``
-    and discarded when the test directory is cleaned up.
-    """
-    cert_path = directory / "server.crt"
-    key_path = directory / "server.key"
-    subprocess.run(
-        [
-            "openssl",
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:2048",
-            "-keyout",
-            str(key_path),
-            "-out",
-            str(cert_path),
-            "-days",
-            "1",
-            "-nodes",
-            "-subj",
-            "/CN=localhost",
-            "-addext",
-            "subjectAltName=DNS:localhost,IP:127.0.0.1",
-        ],
-        check=True,
-        capture_output=True,
-        timeout=30,
-    )
-    return cert_path, key_path
-
-
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -605,13 +563,13 @@ async def test_standalone_tls_real_handshake_roundtrip(tmp_path: Path) -> None:
     Skips (does not fail) if the ``openssl`` CLI is unavailable — see
     ``_generate_self_signed_cert``.
     """
-    if not _openssl_available():
+    if not openssl_available():
         pytest.skip(
             "openssl CLI not found on PATH — required to generate a throwaway "
             "self-signed test certificate for this integration test"
         )
 
-    cert_path, key_path = _generate_self_signed_cert(tmp_path)
+    cert_path, key_path = generate_self_signed_cert(tmp_path)
 
     provider = FileCertificateProvider(str(cert_path), str(key_path))
     cert_and_key = await provider.get_certificate("localhost")

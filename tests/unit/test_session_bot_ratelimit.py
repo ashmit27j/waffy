@@ -3,6 +3,11 @@ Rate Limiting, Bot Detection, Session/Cookie, and Inline Limits.
 """
 
 import asyncio
+import socket
+import ssl
+import threading
+from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -11,6 +16,7 @@ from tests.helpers.fakes import (
     FakeRuleStore,
     FakeUpstreamClient,
 )
+from tests.helpers.tls import generate_self_signed_cert, openssl_available
 from waffy.config.models import (
     BotDetectionConfig,
     CredentialStuffingConfig,
@@ -35,6 +41,13 @@ from waffy.detection.session.services import (
 from waffy.detection.signatures.engine import SignatureEngine
 from waffy.http.limits import TransportResourceProtector
 from waffy.http.pipeline import WaffyPipelineApplication
+from waffy.proxy.tls_fingerprint import (
+    ClientHelloInfo,
+    TlsFingerprintRegistry,
+    compute_fingerprint_from_ssl_object,
+    compute_ja3,
+    parse_client_hello,
+)
 
 
 def test_sliding_window_rate_limiter_and_bounded_memory() -> None:
@@ -262,3 +275,238 @@ async def test_full_pipeline_rate_limit_to_rate_limit_action() -> None:
         r3 = await client.get("/test")
         assert r3.status_code == 429
         assert "Retry-After" in r3.headers
+
+
+# ---------------------------------------------------------------------------
+# JA3/JA4 TLS fingerprint extraction (prompts/04)
+# ---------------------------------------------------------------------------
+
+
+def _capture_real_client_hello_bytes() -> bytes:
+    """Send a real TLS ClientHello (client side only) over a local
+    ``socket.socketpair()`` and return the raw bytes a plain (non-TLS) peer
+    socket receives — a genuine ClientHello record, not a hand-crafted fake.
+
+    The "server" side never completes the handshake; the client's
+    ``do_handshake()`` call blocks waiting for a ServerHello that never
+    arrives and times out on its own socket timeout, which is expected and
+    ignored — we only need the bytes it already wrote to the wire.
+    """
+    client_raw, server_raw = socket.socketpair()
+    server_raw.settimeout(5.0)
+
+    def _client_side() -> None:
+        client_raw.settimeout(2.0)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            wrapped = ctx.wrap_socket(client_raw, server_hostname="localhost")
+            wrapped.close()
+        except Exception:
+            pass  # Expected: the raw peer never answers with a ServerHello.
+
+    thread = threading.Thread(target=_client_side, daemon=True)
+    thread.start()
+    try:
+        data = server_raw.recv(8192)
+    finally:
+        thread.join(timeout=3.0)
+        server_raw.close()
+    return data
+
+
+def test_ja3_computed_from_real_captured_client_hello() -> None:
+    """A real ClientHello, sent by a real Python TLS client over a real
+    connected socket, is captured and correctly parsed into a valid JA3.
+    """
+    raw = _capture_real_client_hello_bytes()
+    info = parse_client_hello(raw)
+    assert info is not None
+    assert info.version != 0
+    assert len(info.cipher_suites) > 0  # a real client always offers ciphers
+
+    ja3 = compute_ja3(info)
+    assert len(ja3) == 32  # md5 hex digest
+    assert ja3 == compute_ja3(info)  # deterministic
+
+
+def test_parse_client_hello_rejects_malformed_input() -> None:
+    assert parse_client_hello(b"") is None
+    assert parse_client_hello(b"\x17\x03\x03\x00\x05hello") is None  # not a handshake record
+    assert parse_client_hello(b"\x16\x03\x01\x00\x04\x01\x00\x00\xff") is None  # truncated body
+    assert parse_client_hello(b"\x16\x03\x01\x00\x04\x02\x00\x00\x00") is None  # not ClientHello
+
+
+def test_ja3_filters_grease_values() -> None:
+    """GREASE cipher/extension IDs (RFC 8701) must not change the JA3 hash."""
+    with_grease = ClientHelloInfo(
+        version=771,
+        cipher_suites=[0x0A0A, 4865, 4866],
+        extensions=[0x0A0A, 0, 10],
+        elliptic_curves=[29, 23],
+        ec_point_formats=[0],
+    )
+    without_grease = ClientHelloInfo(
+        version=771,
+        cipher_suites=[4865, 4866],
+        extensions=[0, 10],
+        elliptic_curves=[29, 23],
+        ec_point_formats=[0],
+    )
+    assert compute_ja3(with_grease) == compute_ja3(without_grease)
+
+
+def test_compute_fingerprint_from_ssl_object_degrades_gracefully() -> None:
+    """Any failure computing the fingerprint returns None, never raises."""
+
+    class _Explodes:
+        def version(self) -> str:
+            raise RuntimeError("boom")
+
+    result = compute_fingerprint_from_ssl_object(cast(ssl.SSLObject, _Explodes()))
+    assert result is None
+
+
+def _real_completed_ssl_socket_pair(
+    cert_path: Path, key_path: Path
+) -> tuple[ssl.SSLSocket, ssl.SSLSocket]:
+    """Perform a real, complete, local TLS handshake over a socketpair.
+
+    Returns (server_ssl_sock, client_ssl_sock) — both are real, fully
+    negotiated TLS sockets (no faked/simulated transport).
+    """
+    raw_server, raw_client = socket.socketpair()
+
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+
+    client_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    client_ctx.check_hostname = False
+    client_ctx.verify_mode = ssl.CERT_NONE
+
+    result: dict[str, ssl.SSLSocket] = {}
+    errors: list[BaseException] = []
+
+    def _server_side() -> None:
+        try:
+            result["server"] = server_ctx.wrap_socket(raw_server, server_side=True)
+        except BaseException as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=_server_side, daemon=True)
+    thread.start()
+    try:
+        result["client"] = client_ctx.wrap_socket(raw_client, server_hostname="localhost")
+    finally:
+        thread.join(timeout=5.0)
+
+    if errors:
+        raise errors[0]
+    return result["server"], result["client"]
+
+
+def test_bot_engine_matches_real_captured_tls_fingerprint(tmp_path: Path) -> None:
+    """End-to-end: a real completed TLS handshake's SSLObject produces a real
+    fingerprint that BotDetectionEngine.assess() correctly matches against a
+    configured known-bad list — and correctly does NOT match an unrelated one.
+    """
+    if not openssl_available():
+        pytest.skip(
+            "openssl CLI not found on PATH — required to generate a throwaway "
+            "self-signed test certificate for this test"
+        )
+    cert_path, key_path = generate_self_signed_cert(tmp_path)
+    server_sock, client_sock = _real_completed_ssl_socket_pair(cert_path, key_path)
+    try:
+        fingerprint = compute_fingerprint_from_ssl_object(server_sock)
+        assert fingerprint is not None
+        assert fingerprint.startswith("waffy-tlsfp-v1:")
+
+        headers = [
+            ("user-agent", "Mozilla/5.0"),
+            ("accept", "*/*"),
+            ("accept-language", "en-US"),
+        ]
+        req = HttpRequestRecord(
+            method=HttpMethod.GET, path="/", client_ip="9.9.9.9", headers=headers
+        )
+
+        matching_cfg = BotDetectionConfig(known_bad_tls_fingerprints=[fingerprint])
+        matching_engine = BotDetectionEngine(matching_cfg)
+        matched_assess = matching_engine.assess(req, tls_fingerprint=fingerprint)
+        assert matched_assess.details.get("tls_fingerprint_known_bad") is True
+        assert matched_assess.bot_score > 0.0
+
+        clean_cfg = BotDetectionConfig(known_bad_tls_fingerprints=["waffy-tlsfp-v1:unrelated"])
+        clean_engine = BotDetectionEngine(clean_cfg)
+        clean_assess = clean_engine.assess(req, tls_fingerprint=fingerprint)
+        assert not clean_assess.details.get("tls_fingerprint_known_bad")
+    finally:
+        server_sock.close()
+        client_sock.close()
+
+
+def test_bot_engine_tls_fingerprint_absent_stays_neutral() -> None:
+    """No TLS fingerprint available (e.g. plaintext mode) must never crash or
+    be treated as suspicious — matches plaintext.py's documented contract.
+    """
+    engine = BotDetectionEngine(BotDetectionConfig())
+    headers = [("user-agent", "Mozilla/5.0"), ("accept", "*/*"), ("accept-language", "en-US")]
+    req = HttpRequestRecord(method=HttpMethod.GET, path="/", client_ip="1.1.1.1", headers=headers)
+    assess = engine.assess(req, tls_fingerprint=None)
+    assert "tls_fingerprint" not in assess.details
+
+
+def test_tls_fingerprint_registry_bounded_lru_and_forget() -> None:
+    registry = TlsFingerprintRegistry(max_entries=2)
+    registry.record(("1.1.1.1", 1), "fp1")
+    registry.record(("2.2.2.2", 2), "fp2")
+    registry.record(("3.3.3.3", 3), "fp3")  # evicts (1.1.1.1, 1) — oldest
+
+    assert registry.get("1.1.1.1", 1) is None
+    assert registry.get("2.2.2.2", 2) == "fp2"
+    assert registry.get("3.3.3.3", 3) == "fp3"
+
+    registry.forget(("3.3.3.3", 3))
+    assert registry.get("3.3.3.3", 3) is None
+
+    registry.record(("4.4.4.4", 4), None)  # None is a no-op, never stored
+    assert registry.get("4.4.4.4", 4) is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_wires_tls_fingerprint_lookup_into_bot_assessment() -> None:
+    """The pipeline's optional tls_fingerprint_lookup is invoked with the
+    real (client_ip, client_port) and its result reaches BotDetectionEngine —
+    proving the standalone-mode wiring end to end without needing a real
+    uvicorn listener in this unit-test file.
+    """
+    known_bad = "waffy-tlsfp-v1:deadbeefdeadbeefdeadbeefdeadbeef"
+    calls: list[tuple[str, int]] = []
+
+    def _lookup(ip: str, port: int) -> str | None:
+        calls.append((ip, port))
+        return known_bad
+
+    cfg = WaffyConfig()
+    cfg.bot_detection.known_bad_tls_fingerprints = [known_bad]
+
+    app = WaffyPipelineApplication(
+        config=cfg,
+        upstream_client=FakeUpstreamClient(status_code=200, body=b"OK"),
+        rule_store=FakeRuleStore(),
+        signature_engine=SignatureEngine([], paranoia_level=ParanoiaLevel.PL1),
+        positive_engine=PositiveSecurityEngine([]),
+        tls_fingerprint_lookup=_lookup,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        resp = await client.get("/hello")
+
+    assert resp.status_code == 200
+    assert len(calls) == 1
+    called_ip, called_port = calls[0]
+    assert called_ip  # a real client_ip was passed through
+    assert isinstance(called_port, int)
