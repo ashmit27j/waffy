@@ -18,6 +18,14 @@ This document captures coding standards, type safety rules, and conventions for 
 5. **Fail-Safe Defaults**:
    - Default `enforcement.mode` = `"shadow"` (log-only, never block).
    - Default `failure.mode` = `"fail_open"` (allow traffic if WAF errors).
+6. **Startup-time config validation warns, never blocks**:
+   A security feature enabled in config but not usably configured (e.g.
+   credential-stuffing detection with no configured login-failure route) must
+   log a `WARNING` at startup, not fail silently and not raise/exit. See
+   `waffy/runtime/startup_checks.py`. If the "is this usably configured"
+   check needs domain knowledge from a detector/service class, expose a
+   narrow `is_configured()`-style query on that class rather than
+   duplicating its config semantics inside the validator.
 
 ## 2. Python & Type Checking Standards
 

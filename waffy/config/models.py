@@ -128,6 +128,33 @@ class CredentialStuffingConfig(BaseModel):
     max_failed_logins_per_ip: int = Field(default=10, ge=1)
     max_failed_logins_per_account: int = Field(default=5, ge=1)
     window_seconds: float = Field(default=60.0, gt=0.0)
+    login_failure_routes: list[str] = Field(
+        default_factory=lambda: list[str](),
+        description=(
+            "Route path(s) (or path patterns) whose response indicates a "
+            "failed login attempt (e.g. a 401/403 from '/login'). Required "
+            "for CredentialStuffingDetector to ever have anything to record "
+            "-- with this empty, failed-login velocity detection is enabled "
+            "but can never trip, since nothing tells it what a failed login "
+            "looks like. See waffy/runtime/startup_checks.py."
+        ),
+    )
+
+
+class CsrfConfig(BaseModel):
+    """CSRF token protection configuration.
+
+    Per docs/MASTER_SPEC.md §10: token-based protection (this config, backed
+    by waffy.detection.session.services.CsrfProtector) applies to
+    embedded-middleware mode, where waffy runs in-process with the wrapped
+    application. Proxy modes (standalone TLS / plaintext) instead rely on
+    header-based validation (Origin/Referer) -- not yet implemented, tracked
+    separately.
+    """
+
+    enabled: bool = False
+    secret_key: str = "waffy-default-csrf-secret-change-in-prod"
+    max_age_seconds: int = Field(default=3600, ge=1)
 
 
 class BotConfig(BaseModel):
@@ -257,6 +284,7 @@ class WaffyConfig(BaseModel):
     credential_stuffing: CredentialStuffingConfig = Field(
         default_factory=CredentialStuffingConfig
     )
+    csrf: CsrfConfig = Field(default_factory=CsrfConfig)
     engine: EngineConfig = Field(default_factory=EngineConfig)
     enforcement: EnforcementConfig = Field(default_factory=EnforcementConfig)
     allowlist: AllowlistConfig = Field(default_factory=AllowlistConfig)

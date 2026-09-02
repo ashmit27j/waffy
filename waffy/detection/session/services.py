@@ -88,6 +88,15 @@ class CredentialStuffingDetector:
         self.source_failures: OrderedDict[str, deque[float]] = OrderedDict()
         self.account_failures: OrderedDict[str, deque[float]] = OrderedDict()
 
+    def is_configured(self) -> bool:
+        """Whether this detector has been told what a failed login looks
+        like. With no ``login_failure_routes`` configured, nothing ever
+        calls ``record_failed_attempt`` for a real reason and velocity
+        detection can never trip -- see ``waffy/runtime/startup_checks.py``.
+        Query only; does not affect detection logic.
+        """
+        return bool(self.config.login_failure_routes)
+
     def record_failed_attempt(
         self,
         source_ip: str,

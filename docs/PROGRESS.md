@@ -21,7 +21,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 | **7 (Phase 06)** | Rate limiting, DoS, bot detection, session/CSRF | **DONE** | All implemented & tested ✓ |
 | **8 (Phase 07)** | Deployment proxy modes, ASGI middleware, IPC | **DONE** | All deliverables implemented & tested ✓ |
 | **9 (Phase 08)** | Management API, control panel, SIEM/metrics | **DONE** | All deliverables implemented & tested ✓ |
-| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus (prompts/01), benchmarks (prompts/02), real TLS handshake test (prompts/03), JA3/JA4 fingerprinting (prompts/04), enforcement-state persistence (prompts/05), HTTP/2 desync coverage (prompts/06) done; config validation warnings still pending (prompts/07) |
+| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | **DONE** | All 7 prompts/01-07 tasks complete: attack-lab corpus, benchmarks, real TLS handshake test, JA3/JA4 fingerprinting, enforcement-state persistence, HTTP/2 desync coverage, startup config validation warnings |
 | **11 (Phase 10)** | Release polish, interoperability documentation | **DONE** | Documentation and release polish complete ✓ |
 
 ---
@@ -175,6 +175,17 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **`tests/unit/test_http_engine.py`**: **Tested** — 4 new tests (`test_uvicorn_has_no_http2_protocol_implementation`, `test_http2_scope_smuggling_checks_are_version_agnostic`, `test_http2_excessive_header_count_rejected`, `test_http2_clean_request_parses_normally`), all passing alongside the 6 pre-existing tests in that file (10/10).
 - **Regression-guarding design choice**: `test_uvicorn_has_no_http2_protocol_implementation` is a living assertion, not just prose — if uvicorn ever bundles h2 support or `h2`/`hypercorn` get added as a dependency in a future task, this test starts failing and signals "re-verify against a real H2 connection before claiming HTTP/2 compatibility," per `CLAUDE.md`'s labeling-honesty rule.
 - **`docs/PROGRESS.md`**: HTTP/2 Support Status line above updated with the precise finding (**Implemented**)
+
+### Phase 9 / Task 07 (prompts/07-config-validation-warnings.md) — Startup Warnings for Silently-Disabled Security Features
+
+- **Investigation finding, before this task**: neither warning condition could even be *expressed* in config — `CredentialStuffingConfig` had no field for which route/response-pattern indicates a login failure, and there was no CSRF config section at all (`CsrfProtector` existed as a standalone class with a hardcoded default secret, never instantiated anywhere in production code). Both `CredentialStuffingDetector` and `CsrfProtector` were also **never wired into `WaffyPipelineApplication`** — a broader dormancy gap than the task assumed, noted here but explicitly **not fixed** (out of scope: this task is about warning when an enabled feature is misconfigured, not about wiring previously-unwired detectors into the live pipeline, which is a separate, larger change).
+- **`waffy/config/models.py`**: **Tested**. Added `CredentialStuffingConfig.login_failure_routes: list[str]` (default `[]`) and a new `CsrfConfig` model (`enabled: bool = False`, `secret_key`, `max_age_seconds`) wired as `WaffyConfig.csrf`.
+- **`waffy/detection/session/services.py`**: **Tested**. Only change: `CredentialStuffingDetector.is_configured() -> bool`, a pure query on existing config state — detection logic (`record_failed_attempt`) untouched.
+- **`waffy/runtime/startup_checks.py`** (new module): **Tested**. `run_startup_config_warnings(config)` logs a `WARNING` (never raises, never mutates config) for: (1) credential-stuffing enabled with no `login_failure_routes`, (2) `transport.mode == "embedded"` with `csrf.enabled == False`. Both the triggered and not-triggered case are covered for each condition (`tests/unit/test_startup_config_warnings.py`, 9/9 passing), plus a config-immutability/no-raise sanity test.
+- **`waffy/runtime/__main__.py`** (new) + `[project.scripts] waffy-core` (pyproject.toml): **Implemented, explicitly scoped**. A minimal, real, runnable entrypoint (`uv run waffy-core --config ...`) that loads config and runs the startup warnings — it does **not** bind a listener, start IPC, or construct a real pipeline (that full wiring didn't exist before this task either; `core_daemon.py` already documented this as future work). Built specifically so the acceptance criteria's "manually start the core process" step has something real to run. Manual run output (both conditions triggered, using a `transport.mode = "embedded"` override config) and the default-config run (only the credential-stuffing warning fires, since default `transport.mode` is `"plaintext"`) are both captured in this session's transcript.
+- **Docstring coverage**: all new public functions/classes documented; `docs/CODING_STANDARDS.md` updated with a new "startup-time config validation warns, never blocks" principle.
+- **Fail-safe defaults preserved**: `enforcement.mode` still defaults to `shadow`, `failure_mode` still `fail_open` — this task only adds logging, verified by `test_startup_checks_never_raise_and_never_mutate_config`.
+- **`docs/PROGRESS.md`**: this entry + top-level Phase 9 status (**Implemented**)
 
 ### Final Release Quality Gate (Phase 10)
 
