@@ -305,6 +305,52 @@ migration path for a schema change to the JSON blobs it stores. For a first
 deployment, treat `state_store_path` as a single-instance file — don't share
 it across multiple `waffy-core` processes.
 
+### Exactly what `SqliteRuleStore` persists (prompts/12)
+
+Verified directly against `waffy.core.interfaces.RuleStore`'s Protocol
+methods and `waffy.enforcement.store.SqliteRuleStore`'s implementation — not
+restated from a prior session's summary. `RuleStore` (and therefore
+`SqliteRuleStore`) covers exactly three state categories, one SQLite table
+each (`bans`, `allowlist`, `virtual_patches`):
+
+| State | Persisted by `SqliteRuleStore`? | Notes |
+|---|---|---|
+| **Ban list** (`BanEntry` rows) | ✅ Yes | `add_ban` / `get_ban` / `list_active_bans` / `remove_ban`. Expired bans are filtered out by `expires_at` on read, not deleted — an expired row stays on disk until explicitly removed. |
+| **Pending-approval queue** | ✅ Yes — same table as bans | There is no separate pending-approval store. A "pending ban" is an ordinary `BanEntry` row with `status = PENDING_APPROVAL`; approving or rejecting it is a normal `remove_ban` call. Persisting the ban list therefore persists the pending queue automatically — nothing extra to configure. |
+| **Allowlist** (`AllowlistEntry` rows) | ✅ Yes | `add_allowlist_entry` / `list_allowlist` / `remove_allowlist_entry`. |
+| **Virtual patch rules** (`VirtualPatchRule` rows) | ✅ Yes | `add_virtual_patch` / `list_virtual_patches`. No `remove_virtual_patch` exists on the Protocol today — a deployed virtual patch is not currently removable via this store at all (in-memory or SQLite); this is a pre-existing `RuleStore` Protocol gap, not something `state_store_path` changes. |
+
+**Explicitly NOT covered by `state_store_path` / `SqliteRuleStore`** — these
+stay in-memory-only regardless of whether persistence is enabled, because
+they live in entirely different components, not `RuleStore`:
+
+- The recent-events / recent-assessments ring buffers (`waffy.ipc.server.IpcStateStore`) that back `GET /api/v1/events` and `GET /api/v1/requests` — bounded in-memory deques, reset to empty on every restart.
+- Rate-limiter sliding-window counters (`waffy.detection.ratelimit.engine.RateLimitEngine`) — a restart resets every client's rate-limit window to zero.
+- Bot-detection's timing-regularity and TLS-fingerprint-registry trackers (`waffy.detection.bot.engine`) — reset on restart.
+- Credential-stuffing failed-login velocity counters (`waffy.detection.session.services.CredentialStuffingDetector`) — reset on restart, meaning an in-progress credential-stuffing attempt's counted failures are lost across a restart.
+- Anomaly model artifacts and candidates (`config.anomaly.model_dir` / `ModelGovernanceService`, see the Phase 9 / Task 10 `docs/PROGRESS.md` entry) — these already persist to their own directory on disk independent of `state_store_path` entirely; they are a separate persistence mechanism, not part of `RuleStore`.
+
+**Recommendation — when to enable `state_store_path`**: treat it as required,
+not optional, for any deployment where either is true:
+
+1. **The process runs under a restart-prone supervisor** — systemd with
+   `Restart=on-failure`/`always`, a container orchestrator's liveness-probe
+   restart, or any watchdog that can kill and relaunch `waffy-core`
+   unattended. Every such restart silently wipes the ban list, allowlist,
+   and pending queue if `state_store_path` is unset — an operator may not
+   notice until an attacker they'd already banned is back in.
+2. **Losing active bans/allowlist changes on restart is unacceptable for
+   the deployment's risk posture** — e.g. `enforcement.mode = "active"`
+   in front of a real production application, where an operator has made
+   manual allowlist/ban decisions they need to survive a crash or planned
+   restart.
+
+Conversely, a purely evaluative `SHADOW`-mode deployment being run
+interactively for a short trial (no restart automation, no operator-made
+allowlist/ban decisions worth keeping) can reasonably leave
+`state_store_path` unset — the startup `WARNING` is informational in that
+case, not a misconfiguration.
+
 ---
 
 ## Choosing a Mode
