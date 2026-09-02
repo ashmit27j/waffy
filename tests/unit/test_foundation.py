@@ -256,6 +256,53 @@ def test_config_loader_from_file(tmp_path: Path) -> None:
         load_config(bad_toml)
 
 
+def test_bot_detection_config_loads_from_shipped_default_toml() -> None:
+    """Regression guard for prompts/11: config/default_config.toml's
+    section name must match WaffyConfig.bot_detection's Pydantic field name
+    (`[bot_detection]`), not the class name or any other spelling -- a wrong
+    section name is silently ignored by model_validate() with no error, and
+    BotDetectionConfig()'s hardcoded defaults get used instead regardless of
+    what the TOML file says.
+    """
+    cfg = load_config(Path("config/default_config.toml"))
+    assert cfg.bot_detection.honeypot_endpoints == [
+        "/.well-known/waffy-trap",
+        "/admin/hidden-trap.php",
+    ]
+    assert cfg.bot_detection.scanner_weight == 25.0
+    assert cfg.bot_detection.timing_regularity_threshold == 0.15
+
+
+def test_bot_detection_config_loads_non_default_values_through_real_toml_path(
+    tmp_path: Path,
+) -> None:
+    """Loads through the real TOML file -> WaffyConfig.model_validate() path
+    (not by constructing BotDetectionConfig directly, which would pass even
+    if the section name were wrong) with values that deliberately differ
+    from BotDetectionConfig's hardcoded defaults, so a reintroduced
+    section-name mismatch would make this test fail rather than silently
+    pass against coincidentally-matching defaults.
+    """
+    custom_toml = tmp_path / "custom.toml"
+    custom_toml.write_text(
+        """
+[bot_detection]
+enabled = false
+honeypot_endpoints = ["/custom-trap-path"]
+scanner_weight = 99.5
+timing_regularity_threshold = 0.42
+known_bad_tls_fingerprints = ["deadbeefdeadbeefdeadbeefdeadbeef"]
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(custom_toml)
+    assert cfg.bot_detection.enabled is False
+    assert cfg.bot_detection.honeypot_endpoints == ["/custom-trap-path"]
+    assert cfg.bot_detection.scanner_weight == 99.5
+    assert cfg.bot_detection.timing_regularity_threshold == 0.42
+    assert cfg.bot_detection.known_bad_tls_fingerprints == ["deadbeefdeadbeefdeadbeefdeadbeef"]
+
+
 @pytest.mark.asyncio
 async def test_protocol_fake_implementations() -> None:
     upstream = FakeUpstreamClient(status_code=200, body=b"Hello")

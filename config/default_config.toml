@@ -76,15 +76,24 @@ requests_per_minute_global = 10000
 # Rate limit window in seconds
 window_seconds = 60
 
-[bot]
+# Section name must match WaffyConfig's Pydantic field name (`bot_detection`),
+# not the class name (`BotDetectionConfig`) -- see prompts/11 and
+# docs/ARCHITECTURE.md's "Config section-name mismatches" note. A section
+# named anything else is silently ignored by WaffyConfig.model_validate()
+# and BotDetectionConfig()'s hardcoded defaults are used instead, with no
+# error raised.
+[bot_detection]
 # Enable bot heuristics
 enabled = true
-# Honeypot link path
-honeypot_path = "/.well-known/waffy-trap"
+# Honeypot link paths (a request to any of these is a scraper/bot signal)
+honeypot_endpoints = ["/.well-known/waffy-trap", "/admin/hidden-trap.php"]
 # Known scanner user-agent scoring weight
 scanner_weight = 25.0
 # Timing regularity CV threshold
 timing_regularity_threshold = 0.15
+# Locally-managed list of known-bad TLS ClientHello fingerprints (JA3/waffy-tlsfp-v1);
+# empty by default, not a live threat-intel feed -- see BotDetectionConfig's docstring.
+known_bad_tls_fingerprints = []
 
 [engine]
 # Base scoring weights

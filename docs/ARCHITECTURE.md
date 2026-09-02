@@ -161,15 +161,39 @@ operator-managed local list — not a live threat-intel feed. Values can be
 either canonical JA3 hashes (once the follow-up above exists) or today's
 `waffy-tlsfp-v1:`-prefixed values.
 
-**Pre-existing, unrelated gap noticed during this task (not fixed here, out
-of scope)**: `config/default_config.toml`'s `[bot]` TOML section doesn't
+**FIXED in prompts/11** (see `docs/PROGRESS.md`'s dedicated Task 11 entry for
+the commit): `config/default_config.toml`'s `[bot]` TOML section didn't
 actually populate `WaffyConfig.bot_detection` — `WaffyConfig.model_validate()`
 expects a `[bot_detection]` section name to match the Pydantic field name,
-and there's a second, apparently-unused `BotConfig` model in
-`waffy/config/models.py` with the mismatched `[bot]` field names. This means
-today, `config/default_config.toml`'s bot-detection values are silently
-ignored at load time and `BotDetectionConfig()`'s hardcoded defaults are
-always used regardless of the TOML file. This predates prompts/04 and is
-unrelated to TLS fingerprinting; flagged here for a future config-layer fix
-(prompts/07's config-validation-warnings task is the natural place to catch
-this class of silently-ignored-section problem).
+and there was a second, unused `BotConfig` model in `waffy/config/models.py`
+with the mismatched `[bot]` field names (that model has since been deleted —
+it had no callers anywhere and existed only as a stale echo of the wrong
+section name). This meant `config/default_config.toml`'s bot-detection
+values were silently ignored at load time and `BotDetectionConfig()`'s
+hardcoded defaults were always used regardless of the TOML file. The TOML
+section was renamed to `[bot_detection]` with field names corrected to match
+`BotDetectionConfig` exactly (`honeypot_path: str` → `honeypot_endpoints:
+list[str]`, plus the previously-absent `known_bad_tls_fingerprints` key),
+and `waffy/config/__init__.py` now exports `BotDetectionConfig` instead of
+the deleted dead class. Two regression tests load through the real
+`load_config()` → TOML path (not by constructing `BotDetectionConfig`
+directly, which would pass even with a wrong section name) with values that
+deliberately differ from the class's hardcoded defaults, so a reintroduced
+section-name mismatch fails the test rather than silently passing.
+
+**New gap found while fixing the above, not fixed (explicitly out of
+prompts/11's scope — that task was bot-config-only), flagged here for a
+future task**: the exact same class of bug also affects rate limiting —
+`config/default_config.toml` has a `[ratelimit]` section, but
+`WaffyConfig.rate_limiting`'s Pydantic field name is `rate_limiting`, and the
+TOML's field names (`requests_per_minute_ip`, `requests_per_minute_session`,
+`requests_per_minute_global`) don't match `RateLimitConfig`'s
+(`requests_per_ip_per_minute`, `requests_per_session_per_minute`,
+`global_requests_per_minute`; `requests_per_route_per_minute` is missing
+from the TOML entirely). Today, `config/default_config.toml`'s rate-limit
+values are silently ignored at load time exactly like the bot-detection
+values were. Separately (lower severity — no wrong name, just no TOML
+surface at all yet): `http_limits`, `cookie_security`, `credential_stuffing`,
+and `csrf` have no corresponding section in `config/default_config.toml`, so
+they always load from Pydantic defaults regardless of what an operator might
+try to configure for them. None of this was touched by prompts/11.

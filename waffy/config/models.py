@@ -157,15 +157,6 @@ class CsrfConfig(BaseModel):
     max_age_seconds: int = Field(default=3600, ge=1)
 
 
-class BotConfig(BaseModel):
-    """Bot and automation heuristic configuration (alias for BotDetectionConfig)."""
-
-    enabled: bool = True
-    honeypot_path: str = "/.well-known/waffy-trap"
-    scanner_weight: float = Field(default=25.0, ge=0.0)
-    timing_regularity_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
-
-
 class EngineConfig(BaseModel):
     """Scoring weights and threat-level thresholds."""
 
