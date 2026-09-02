@@ -21,7 +21,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 | **7 (Phase 06)** | Rate limiting, DoS, bot detection, session/CSRF | **DONE** | All implemented & tested ✓ |
 | **8 (Phase 07)** | Deployment proxy modes, ASGI middleware, IPC | **DONE** | All deliverables implemented & tested ✓ |
 | **9 (Phase 08)** | Management API, control panel, SIEM/metrics | **DONE** | All deliverables implemented & tested ✓ |
-| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus + runner (prompts/01) and performance benchmarks (prompts/02) done; TLS integration test, JA3/JA4, state persistence, HTTP/2 coverage, config validation warnings still pending (prompts/03-07) |
+| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus (prompts/01), benchmarks (prompts/02), real TLS handshake test (prompts/03) done; JA3/JA4, state persistence, HTTP/2 coverage, config validation warnings still pending (prompts/04-07) |
 | **11 (Phase 10)** | Release polish, interoperability documentation | **DONE** | Documentation and release polish complete ✓ |
 
 ---
@@ -86,7 +86,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **Phase 6 Test Suite (`tests/unit/test_session_bot_ratelimit.py`)**: **Tested** (8/8 tests passing — sliding window window-reset, multi-scope rate limiting, bot heuristics, cookie rewriting, CSRF token, credential stuffing, transport limits, full pipeline 429 flow)
 
 ### Phase 7 (08-phase-07-deployment-proxy-modes.md) — Deployment Proxy Modes, ASGI Middleware, IPC
-- **`waffy/proxy/standalone.py`**: **Implemented** (`FileCertificateProvider` loads cert/key from disk; `build_ssl_context` builds TLSv1.2+ context; ACME is explicitly documented as stretch goal; real TLS handshake test is **Environment-dependent** — requires a locally-generated cert and localhost port binding)
+- **`waffy/proxy/standalone.py`**: **Tested** (`FileCertificateProvider` loads cert/key from disk; `build_ssl_context` builds TLSv1.2+ context; ACME is explicitly documented as stretch goal; real TLS handshake verified in prompts/03 — see that entry below — updated from the earlier Environment-dependent label now that the gap is closed)
 - **`waffy/proxy/plaintext.py`**: **Tested** (`PlaintextProxyServer` delegates to shared pipeline; TLS-derived signals absent but gracefully neutral; test confirms no crash with absent JA3 data)
 - **`waffy/middleware/asgi.py`**: **Tested** (`WaffyMiddleware` wraps any ASGI app; blocked requests never reach wrapped app; allowed requests are passed through; shared-pipeline test proves no duplicate detection logic; trade-offs explicitly documented — Python-only, no process isolation)
 - **`waffy/ipc/protocol.py`**: **Tested** (Pydantic v2 typed NDJSON schema covering 13 IPC commands; `parse_ipc_request` dispatcher; versioned with `PROTOCOL_VERSION="1.0"`)
@@ -94,7 +94,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **`waffy/runtime/core_daemon.py`**: **Tested** (Ordered startup: IPC → proxy → readiness; `sd_notify READY=1` hook; graceful drain with timeout; in-flight counter; stage-order assertions in integration tests)
 - **`docs/DEPLOYMENT.md`**: **Implemented** (Concrete example configs for all three modes; fail-open/fail-closed trade-off stated prominently; TLS signal degradation table for plaintext mode; IPC socket permission guidance)
 - **IPC socket permission bits**: **Tested** (0o600 assertion passes; multi-OS-user rejection is documented as environment-dependent — relies on POSIX `connect(2)` enforcement which is kernel-tested)
-- **Real TLS handshake test**: **Environment-dependent** (Requires self-signed cert generation + localhost port binding; documented in `test_standalone_tls_environment_note`)
+- **Real TLS handshake test**: **Tested** (prompts/03 — see the dedicated Phase 9 / Task 03 entry below; `test_standalone_tls_environment_note` has been replaced by a real, passing test)
 - **Phase 7 Integration Test Suite (`tests/integration/test_phase7_deployment.py`)**: **Tested** (14/14 tests passing — plaintext mode, middleware block/allow, shared-pipeline proof, IPC socket permissions, IPC read/write/mode, protocol version mismatch, startup stage order, graceful drain, FileCertificateProvider unit tests)
 
 ### Phase 8 (09-phase-08-api-controlpanel-siem.md) — Management API, Control Panel, SIEM/Metrics
@@ -134,6 +134,13 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **Measured results (this session)**: **p99 added latency: 0.34 ms** (148-byte JSON body, PL1 default rule set); **sustained throughput: ~7,325 req/sec** at concurrency 64 with `queue_growth_detected: false` (flat per-second completion profile across the 5s window). No prior target existed to compare against — this run establishes the baseline.
 - **Caveat carried into docs/PERFORMANCE.md**: single-process, single-machine, `FakeUpstreamClient`-backed numbers only — no real network RTT, no real upstream latency, no TLS handshake cost, ML anomaly scoring not exercised. **Not yet validated** against a real deployment.
 - **`docs/PROGRESS.md`**: this entry (**Implemented**)
+
+### Phase 9 / Task 03 (prompts/03-standalone-tls-integration-test.md) — Real TLS Handshake Integration Test for Standalone Proxy Mode
+
+- **`tests/integration/test_phase7_deployment.py::test_standalone_tls_real_handshake_roundtrip`**: **Tested** (Marked `@pytest.mark.tls_integration`, registered in `pyproject.toml`; replaces the prior `test_standalone_tls_environment_note` placeholder). Verifies, in one real run: a throwaway self-signed cert/key generated via the `openssl` CLI into `tmp_path` (never committed); `FileCertificateProvider.get_certificate()` reading it from disk; `build_ssl_context()` producing the real `ssl.SSLContext` (asserted `minimum_version == TLSv1_2`, unchanged); a real `uvicorn.Server` binding that exact context to a loopback TCP port via `ssl_context_factory`; a real `httpx.AsyncClient` completing a real TLS handshake and validating the server certificate (`ssl.create_default_context(cafile=...)`, not `verify=False`); the decrypted request reaching `WaffyPipelineApplication` and being forwarded to `FakeUpstreamClient` (`upstream.recorded_requests` asserted); `forwarded_record.tls_info is not None` confirming uvicorn's own `scope["scheme"]="https"` detection reached the pipeline.
+- **Dependency choice**: cert generation uses the system `openssl` CLI via `subprocess`, not a new Python dependency (`cryptography`) — avoids the CLAUDE.md "new dependency needs explicit justification" question entirely for a one-off test fixture. The test skips (not fails) if `openssl` isn't on `PATH`.
+- **TLS version floor**: unchanged — `build_ssl_context` still enforces `TLSv1_2` minimum; this task only added a consumer/verifier, never touched that function.
+- **`docs/PROGRESS.md`**: Phase 7 standalone-proxy entry and this entry updated from `Environment-dependent` to `Tested` (**Implemented**)
 
 ### Final Release Quality Gate (Phase 10)
 

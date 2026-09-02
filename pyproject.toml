@@ -68,3 +68,6 @@ minversion = "8.0"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+markers = [
+    "tls_integration: real TLS handshake against a bound loopback socket (requires openssl CLI on PATH)",
+]

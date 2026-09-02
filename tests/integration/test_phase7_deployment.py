@@ -13,16 +13,23 @@ Coverage
     not asserted here (see comment in test_ipc_permission_bits).
 - Startup/shutdown: correct stage ordering; graceful shutdown drains an
   in-flight request rather than dropping it.
-- TLS standalone mode: real-TLS-handshake integration is environment-dependent
-  because it requires valid cert/key material and binding to a localhost port.
-  The ``FileCertificateProvider`` is unit-tested; the full TLS handshake test
-  is documented as environment-dependent (see test_standalone_tls_environment_note).
+- TLS standalone mode: ``test_standalone_tls_real_handshake_roundtrip`` (marked
+  ``@pytest.mark.tls_integration``) generates a throwaway self-signed cert via
+  the ``openssl`` CLI, binds a real ``uvicorn`` TLS listener on loopback using
+  ``waffy/proxy/standalone.py``'s own ``FileCertificateProvider`` +
+  ``build_ssl_context``, and drives a real TLS 1.2+ handshake and HTTP request
+  through the full pipeline to a ``FakeUpstreamClient``. Skips (does not fail)
+  if ``openssl`` is not on ``PATH`` — see that test's docstring.
 """
 
 import asyncio
 import json
 import os
+import shutil
+import socket
+import ssl
 import stat
+import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -30,6 +37,7 @@ from typing import Any
 
 import httpx
 import pytest
+import uvicorn
 
 from tests.helpers.fakes import FakeRuleStore, FakeUpstreamClient
 from waffy.config.models import WaffyConfig
@@ -48,7 +56,7 @@ from waffy.ipc.protocol import (
 from waffy.ipc.server import IpcServer, IpcStateStore
 from waffy.middleware.asgi import WaffyMiddleware, build_middleware
 from waffy.proxy.plaintext import PlaintextProxyServer
-from waffy.proxy.standalone import FileCertificateProvider
+from waffy.proxy.standalone import FileCertificateProvider, build_ssl_context
 from waffy.runtime.core_daemon import CoreDaemon
 
 # ---------------------------------------------------------------------------
@@ -519,24 +527,142 @@ async def test_core_daemon_graceful_drain_in_flight() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Standalone TLS mode — environment-dependent note
+# Standalone TLS mode — real handshake integration test
 # ---------------------------------------------------------------------------
 
 
-def test_standalone_tls_environment_note() -> None:
-    """Documents that real-TLS-handshake testing is environment-dependent.
+def _openssl_available() -> bool:
+    return shutil.which("openssl") is not None
 
-    Running a real TLS handshake against a loopback listener requires:
-    1. A locally-generated self-signed cert and key (feasible with cryptography lib).
-    2. Binding a free port on the test host (possible race in CI).
-    3. An HTTPS client that trusts the test CA (requires cert pinning setup).
 
-    This is documented as environment-dependent per CLAUDE.md honesty rules.
-    The ``FileCertificateProvider`` itself is tested below (unit level) without
-    a network roundtrip.  The full TLS integration path is covered by the
-    plaintext-mode tests above, which exercise the identical pipeline.
+def _generate_self_signed_cert(directory: Path) -> tuple[Path, Path]:
+    """Generate a throwaway self-signed cert/key pair via the ``openssl`` CLI.
+
+    Uses the system ``openssl`` binary rather than adding a new Python
+    dependency (e.g. ``cryptography``) purely for a one-off test fixture —
+    per CLAUDE.md, a new dependency needs explicit justification, and this
+    avoids needing one at all. Never committed: written to a pytest ``tmp_path``
+    and discarded when the test directory is cleaned up.
     """
-    pass  # Documented environment-dependent gap — not a missing implementation.
+    cert_path = directory / "server.crt"
+    key_path = directory / "server.key"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(cert_path),
+            "-days",
+            "1",
+            "-nodes",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    return cert_path, key_path
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    return port
+
+
+@pytest.mark.tls_integration
+@pytest.mark.asyncio
+async def test_standalone_tls_real_handshake_roundtrip(tmp_path: Path) -> None:
+    """A real bound TCP socket, a real TLS 1.2+ handshake, and a real HTTP
+    request flow through the full pipeline to a FakeUpstreamClient.
+
+    Every layer is real except the upstream backend:
+    1. A throwaway self-signed cert/key pair is generated on disk (never
+       committed — lives only in ``tmp_path``).
+    2. ``waffy.proxy.standalone.FileCertificateProvider`` reads it from disk
+       (the same code path a real deployment uses).
+    3. ``waffy.proxy.standalone.build_ssl_context`` builds the real
+       ``ssl.SSLContext`` (TLS 1.2 floor, unchanged from production).
+    4. A real ``uvicorn`` server binds that context to a loopback TCP port
+       via ``ssl_context_factory`` — a genuine listening socket, not a faked
+       ASGI transport.
+    5. A real ``httpx`` client performs a real TLS handshake against it,
+       verifying the server certificate (proving the handshake actually
+       completed and was trusted, not merely "didn't crash").
+    6. The decrypted request reaches ``WaffyPipelineApplication`` and is
+       forwarded to ``FakeUpstreamClient`` — confirmed by inspecting its
+       recorded requests.
+
+    Skips (does not fail) if the ``openssl`` CLI is unavailable — see
+    ``_generate_self_signed_cert``.
+    """
+    if not _openssl_available():
+        pytest.skip(
+            "openssl CLI not found on PATH — required to generate a throwaway "
+            "self-signed test certificate for this integration test"
+        )
+
+    cert_path, key_path = _generate_self_signed_cert(tmp_path)
+
+    provider = FileCertificateProvider(str(cert_path), str(key_path))
+    cert_and_key = await provider.get_certificate("localhost")
+    assert cert_and_key is not None
+    cert_pem, key_pem = cert_and_key
+
+    ssl_ctx = build_ssl_context(cert_pem, key_pem)
+    assert ssl_ctx.minimum_version == ssl.TLSVersion.TLSv1_2
+
+    upstream = FakeUpstreamClient(status_code=200, body=b"upstream-ok-via-real-tls")
+    pipeline = WaffyPipelineApplication(
+        config=WaffyConfig(),
+        upstream_client=upstream,
+        rule_store=FakeRuleStore(),
+        signature_engine=SignatureEngine([], paranoia_level=ParanoiaLevel.PL1),
+        positive_engine=PositiveSecurityEngine([]),
+    )
+
+    port = _find_free_port()
+    config = uvicorn.Config(
+        app=pipeline,
+        host="127.0.0.1",
+        port=port,
+        ssl_context_factory=lambda _cfg, _default: ssl_ctx,
+        lifespan="off",
+        log_level="critical",
+    )
+    server = uvicorn.Server(config)
+    server_task = asyncio.create_task(server.serve())
+
+    try:
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while not server.started and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.02)
+        assert server.started, "uvicorn TLS listener did not start within 5s"
+
+        client_ssl_ctx = ssl.create_default_context(cafile=str(cert_path))
+        async with httpx.AsyncClient(verify=client_ssl_ctx) as client:
+            resp = await client.get(f"https://127.0.0.1:{port}/hello")
+        assert resp.status_code == 200
+        assert resp.text == "upstream-ok-via-real-tls"
+    finally:
+        server.should_exit = True
+        await server_task
+
+    assert len(upstream.recorded_requests) == 1
+    forwarded_record, _ = upstream.recorded_requests[0]
+    # Confirms the pipeline itself recognized this request as having arrived
+    # over a real TLS connection (uvicorn sets scope["scheme"] = "https" only
+    # for a genuinely SSL-wrapped transport).
+    assert forwarded_record.tls_info is not None
 
 
 @pytest.mark.asyncio
