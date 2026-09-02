@@ -148,12 +148,89 @@ subclassed), the fingerprint is `None` and stays a neutral, zero-weight
 signal — never a crash, matching `waffy/proxy/plaintext.py`'s documented
 "absent TLS signal" contract for the no-JA3 case.
 
-**Follow-up (not done in prompts/04, explicitly out of scope for it)**: a
-future task could implement the `MemoryBIO`-based raw-capture listener
-described in option (1) above to get byte-perfect canonical JA3 in
-production. `parse_client_hello`/`compute_ja3` are already written and
-tested against real captured bytes and are ready to be wired to that capture
-path the moment it exists — no rework needed on the algorithm side.
+**Follow-up (not done in prompts/04) — investigated in prompts/13, confirmed
+architecturally impractical without disproportionate complexity and real
+handshake-correctness risk; NOT implemented.** `parse_client_hello`/
+`compute_ja3` are already written and tested against real captured bytes and
+remain ready to be wired to a capture path the moment one exists safely — no
+rework needed on the algorithm side — but no such path was built. Full
+investigation, so a future attempt doesn't have to re-derive this from
+scratch:
+
+The fundamental obstacle is that `waffy/proxy/standalone.py` hands its
+`ssl.SSLContext` to uvicorn via `ssl_context_factory`, which uvicorn passes
+straight through to `loop.create_server(..., ssl=ssl_context)`. Under the
+hood this makes `asyncio`'s selector event loop perform the TLS handshake
+*inside the transport layer*, consuming and decrypting the raw ClientHello
+bytes via OpenSSL before any of waffy's own code (or even uvicorn's
+`H11Protocol.connection_made`) runs. By the time our code can react to a
+connection at all, the raw pre-handshake bytes are already gone with no
+public API to recover them — this is the root cause of the whole
+"not byte-identical" caveat, not a bug in `build_ja3_capturing_protocol`.
+
+Two candidate ways around this were evaluated, both rejected:
+
+1. **A parallel raw-socket accept loop using `socket.MSG_PEEK`.** Bypass
+   `loop.create_server(ssl=...)` (and therefore uvicorn's own listener)
+   entirely: accept the raw TCP connection ourselves, use
+   `loop.add_reader(fd, ...)` plus a manual, low-level
+   `sock.recv(n, socket.MSG_PEEK)` to inspect the ClientHello *without*
+   removing it from the kernel's socket receive buffer, parse it with the
+   already-tested `parse_client_hello`, and only then hand the connection to
+   `loop.start_tls()` to perform the real handshake against the
+   still-unconsumed bytes. This is the technically-correct version of the
+   nginx `ssl_preread` / HAProxy `req.ssl_hello_type` pattern. The blocker:
+   `asyncio.Protocol`/`Transport`'s normal read path (which any use of
+   `loop.create_server()` or `asyncio.start_server()` triggers, even without
+   `ssl=`) *removes* bytes from the kernel buffer into its own internal
+   buffer the moment they're read — true `MSG_PEEK` semantics require
+   operating on the bare `socket.socket` object before any asyncio
+   Transport/Protocol machinery has touched it. Doing this correctly means
+   reimplementing the entire connection-acceptance and TLS-upgrade sequence
+   uvicorn's `Server.startup()` currently provides — not a small addition,
+   a parallel, independently-correct implementation of a security-critical
+   path (exactly what `CLAUDE.md`'s parsing-safety rules and this task's own
+   "don't guess at an approach that silently breaks the TLS handshake"
+   constraint warn against).
+2. **`asyncio.BaseEventLoop.start_tls()`'s `StreamReader`-buffer transfer.**
+   Inspecting CPython 3.14.4's actual `start_tls()` source (this project's
+   test/dev environment) turned up a real mechanism: if the plaintext
+   protocol being upgraded is an `asyncio.StreamReaderProtocol` (i.e. built
+   via `asyncio.start_server()`'s `(reader, writer)` stream API), any bytes
+   already delivered into the `StreamReader`'s internal buffer but not yet
+   consumed by an application `read()` call are automatically moved into the
+   new TLS layer's incoming buffer before the handshake starts — a fix
+   tracked upstream as `gh-142352`. In principle this would let us: accept
+   via `asyncio.start_server()`, poll the reader's buffered (not yet
+   `read()`-consumed) bytes until we have a full ClientHello, parse it, then
+   call `start_tls()` and have the *same* bytes safely carried over into the
+   real handshake — no custom accept loop needed. **Rejected anyway**: this
+   depends on (a) a very recently landed, high-numbered CPython issue fix
+   that is not part of `asyncio`'s long-standing, version-independent public
+   contract, with no confirmation it exists on Python 3.12 or 3.13 — the
+   minimum version `CLAUDE.md` requires this project to support — and
+   (b) reading `StreamReader`'s private `_buffer` attribute directly (no
+   public "peek without consuming" API exists on `StreamReader`). Building a
+   security-critical TLS-handshake behavior on an undocumented, recent-only
+   CPython internal is precisely the "guess at an approach that silently
+   breaks the TLS handshake" failure mode this task was explicitly told to
+   avoid — on Python 3.12/3.13 (in scope for this project), the bytes would
+   most likely be dropped rather than transferred, breaking every single TLS
+   connection to standalone mode silently.
+
+**Conclusion**: both concrete paths to byte-perfect canonical JA3 in
+standalone TLS mode require either reimplementing uvicorn's
+connection-acceptance/TLS-upgrade internals from scratch, or relying on
+undocumented, version-fragile CPython internals in a security-critical code
+path. Per this task's explicit "stop and report rather than force a fragile
+fix" instruction, **no implementation was attempted**. The existing
+`compute_fingerprint_from_ssl_object()` real-signal fallback (see above)
+remains the production path, unchanged. The "not byte-identical to canonical
+JA3" caveat **stands** — it is not resolved by this investigation, only more
+precisely explained. A future attempt should budget for a genuine
+custom-accept-loop implementation (option 1 above) as a standalone,
+carefully-tested project, not an incremental addition to the existing
+`build_ja3_capturing_protocol` subclassing approach.
 
 **Known-bad fingerprint list**: `config.bot_detection.known_bad_tls_fingerprints`
 (`waffy/config/models.py::BotDetectionConfig`) is an empty-by-default,
