@@ -21,7 +21,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 | **7 (Phase 06)** | Rate limiting, DoS, bot detection, session/CSRF | **DONE** | All implemented & tested ✓ |
 | **8 (Phase 07)** | Deployment proxy modes, ASGI middleware, IPC | **DONE** | All deliverables implemented & tested ✓ |
 | **9 (Phase 08)** | Management API, control panel, SIEM/metrics | **DONE** | All deliverables implemented & tested ✓ |
-| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus (prompts/01), benchmarks (prompts/02), real TLS handshake test (prompts/03), JA3/JA4 fingerprinting (prompts/04), enforcement-state persistence (prompts/05) done; HTTP/2 coverage, config validation warnings still pending (prompts/06-07) |
+| **10 (Phase 09)** | Hardening, synthetic attack-lab corpus, benchmarks | In progress | Attack-lab corpus (prompts/01), benchmarks (prompts/02), real TLS handshake test (prompts/03), JA3/JA4 fingerprinting (prompts/04), enforcement-state persistence (prompts/05), HTTP/2 desync coverage (prompts/06) done; config validation warnings still pending (prompts/07) |
 | **11 (Phase 10)** | Release polish, interoperability documentation | **DONE** | Documentation and release polish complete ✓ |
 
 ---
@@ -46,7 +46,7 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **`waffy/http/parser.py`**: **Tested** (Ambiguity & smuggling rejection: CL/TE conflicts, duplicate conflicting CL headers, chunked framing validation, header size/count bounds, request line limits)
 - **`waffy/http/upstream.py`**: **Implemented** (Real `httpx.AsyncClient`-based `HttpxUpstreamClient` forwarding requests with hop-by-hop header filtering)
 - **`waffy/http/transport.py`**: **Tested** (Starlette/ASGI `ProxyApplication` accepting requests, enforcing malformed request rejection even in SHADOW mode, and forwarding via `UpstreamClient`)
-- **HTTP/2 Support Status**: **Not yet validated** (ASGI server level HTTP/2 capability depends on uvicorn/hypercorn deployment profile; HTTP/1.1 fully implemented and tested)
+- **HTTP/2 Support Status**: **Tested, and not currently deployable** — confirmed by direct inspection (`test_uvicorn_has_no_http2_protocol_implementation`, prompts/06) that uvicorn, this project's only ASGI server dependency, ships zero HTTP/2 protocol support (only h11/httptools); `h2`/`hypercorn` are not project dependencies. No waffy deployment mode can currently negotiate HTTP/2 at all, so there is no live code path for an HTTP/2-specific smuggling attack today. Separately confirmed (also Tested) that `waffy/http/parser.py`'s CL/TE-ambiguity, duplicate-Content-Length, and header-count checks are structurally HTTP-version-agnostic — they operate purely on the ASGI-normalized header list/body stream, never HTTP/1.1 wire bytes — verified against synthetic `http_version="2"` ASGI scopes in `tests/unit/test_http_engine.py`. Full write-up: see the Phase 9 / Task 06 entry below. HTTP/1.1 remains fully implemented and tested.
 - **Phase 2 Test Suite (`tests/unit/test_http_engine.py`)**: **Tested** (Table-driven anti-evasion, desync ambiguity rejection, decompression bomb fixtures, safe XML parsing, multipart metadata extraction, end-to-end ASGI proxy flow)
 
 ### Phase 3 (04-phase-03-detection-rule-engine.md) — Detection: Signature Engine & Positive Security
@@ -167,6 +167,14 @@ Tracking implementation status across phases with strict labeling honesty (`Impl
 - **`docs/DEPLOYMENT.md`**: new "Enforcement State Persistence" section — states the restart-loses-everything risk plainly, gives the config snippet to opt in, and notes what's not yet built (rotation/backup, multi-instance sharing).
 - **Validation chain**: **unchanged** — 9 stages, same order, same rejection behavior; this task was a storage-backend swap only, confirmed by the drop-in test above.
 - **`docs/PROGRESS.md`**: this entry + the `validation.py` "persistent" terminology clarification above (**Implemented**)
+
+### Phase 9 / Task 06 (prompts/06-http2-evasion-coverage.md) — HTTP/2 Desync/Evasion Coverage
+
+- **Investigation finding (confirmed by direct inspection, not assumed)**: uvicorn — this project's only ASGI server dependency — ships **zero HTTP/2 protocol support**; its `uvicorn/protocols/http/` package contains only `h11_impl.py` and `httptools_impl.py`, no `h2_impl.py`. `h2` and `hypercorn` (the usual source of ASGI HTTP/2 support) are not installed and not project dependencies. **No waffy deployment mode (standalone, plaintext, middleware) can currently negotiate HTTP/2 at all.** This is a stronger, more precise finding than the prior vague "Not yet validated" label — there is no live HTTP/2 code path today, so an HTTP/2-specific smuggling attack has nowhere to land regardless of parser correctness.
+- **No parser gap found; no restructuring done**, per this task's constraint. `waffy/http/parser.py`'s `validate_request_framing`/`parse_asgi_request` were confirmed, not assumed, to be structurally HTTP-version-agnostic: they read only `scope["headers"]` (already ASGI-normalized, identical shape for any HTTP version a server might produce) and the ASGI body stream — never HTTP/1.1-specific wire framing. Verified with synthetic `http_version="2"` ASGI scopes (no real socket, no h2/hypercorn dependency) replaying the exact CL/TE-ambiguity, duplicate-Content-Length, and header-count-limit table from `test_malformed_framing_ambiguity` through the full `parse_asgi_request()` pipeline, plus one clean-request false-positive check.
+- **`tests/unit/test_http_engine.py`**: **Tested** — 4 new tests (`test_uvicorn_has_no_http2_protocol_implementation`, `test_http2_scope_smuggling_checks_are_version_agnostic`, `test_http2_excessive_header_count_rejected`, `test_http2_clean_request_parses_normally`), all passing alongside the 6 pre-existing tests in that file (10/10).
+- **Regression-guarding design choice**: `test_uvicorn_has_no_http2_protocol_implementation` is a living assertion, not just prose — if uvicorn ever bundles h2 support or `h2`/`hypercorn` get added as a dependency in a future task, this test starts failing and signals "re-verify against a real H2 connection before claiming HTTP/2 compatibility," per `CLAUDE.md`'s labeling-honesty rule.
+- **`docs/PROGRESS.md`**: HTTP/2 Support Status line above updated with the precise finding (**Implemented**)
 
 ### Final Release Quality Gate (Phase 10)
 
