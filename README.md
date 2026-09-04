@@ -24,6 +24,21 @@ waffy can be deployed in three different ways depending on your architecture. Se
    - Embedded directly into a Python ASGI application (like FastAPI or Starlette). No separate waffy process is needed for the data plane.
    - *Best for:* Pure Python stacks looking for the lowest latency overhead without managing a separate proxy process.
 
+## Prerequisites
+
+- Python 3.12+ and [`uv`](https://docs.astral.sh/uv/).
+- **Windows developers: WSL is required, not optional.** waffy's IPC layer
+  (`waffy/ipc/`, between the `waffy-core` enforcement process and the
+  `waffy-api` management process) uses `asyncio.start_unix_server`, which
+  needs `socket.AF_UNIX` — a POSIX-only socket family that native Windows
+  Python does not implement. Running `waffy-core`, the management API, or
+  the test suite on Windows requires a WSL (Windows Subsystem for Linux)
+  Ubuntu shell operating on the repo path (e.g. `/mnt/d/...` for a `D:`
+  checkout), not a native Windows Python interpreter. This is unrelated to
+  standalone TLS mode's own Linux-only assumption (`socket.MSG_PEEK` for JA3
+  capture — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)); both point
+  at "deploy on Linux" but for independent reasons.
+
 ## Quickstart
 
 The recommended path to deploying waffy in production is a gradual escalation of enforcement, identical to the path used by pirewall. **Do not deploy straight to ACTIVE mode.**

@@ -45,7 +45,6 @@ import struct
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 logger = logging.getLogger("waffy.proxy.tls_fingerprint")
 
@@ -74,13 +73,13 @@ _GREASE_VALUES: frozenset[int] = frozenset(
     )
 )
 
-_TLS_HANDSHAKE_RECORD_TYPE = 0x16
+TLS_HANDSHAKE_RECORD_TYPE = 0x16
 _CLIENT_HELLO_MSG_TYPE = 0x01
 _SUPPORTED_GROUPS_EXT = 10
 _EC_POINT_FORMATS_EXT = 11
 # TLS record max payload (16384) plus header/handshake-header slack — bounds
 # the parse against attacker-controlled input per CLAUDE.md's parsing rules.
-_MAX_INPUT_BYTES = 16640
+MAX_CLIENT_HELLO_BYTES = 16640
 
 
 @dataclass(frozen=True)
@@ -100,12 +99,12 @@ def parse_client_hello(data: bytes) -> ClientHelloInfo | None:
 
     Defensive, bounds-checked parsing of attacker-controlled bytes: every
     length field is validated against the remaining buffer before use, input
-    is capped at ``_MAX_INPUT_BYTES``, and any structural problem (truncated
-    buffer, wrong record/message type, an inconsistent length field) returns
-    ``None`` rather than raising or looping unboundedly.
+    is capped at ``MAX_CLIENT_HELLO_BYTES``, and any structural problem
+    (truncated buffer, wrong record/message type, an inconsistent length
+    field) returns ``None`` rather than raising or looping unboundedly.
     """
     try:
-        return _parse_client_hello_unsafe(data[:_MAX_INPUT_BYTES])
+        return _parse_client_hello_unsafe(data[:MAX_CLIENT_HELLO_BYTES])
     except (struct.error, IndexError, ValueError):
         return None
 
@@ -115,7 +114,7 @@ def _parse_client_hello_unsafe(data: bytes) -> ClientHelloInfo | None:
         return None
     record_type = data[0]
     pos = 5  # skip record header: type(1) + version(2) + length(2)
-    if record_type != _TLS_HANDSHAKE_RECORD_TYPE:
+    if record_type != TLS_HANDSHAKE_RECORD_TYPE:
         return None
 
     if pos + 4 > len(data):
@@ -270,8 +269,11 @@ class TlsFingerprintRegistry:
     """Bounded, in-memory map of ``(peer_ip, peer_port) -> fingerprint`` for
     the lifetime of a TCP connection.
 
-    Populated by a connection-capturing protocol (see
-    ``build_ja3_capturing_protocol``) at connection start, consulted by the
+    Populated either by ``PreAcceptTlsServer``'s pre-accept ``MSG_PEEK``
+    stage (byte-accurate canonical JA3) or, as a fallback, by
+    ``build_fingerprint_aware_protocol``'s connection-capturing protocol
+    subclass (post-handshake ``SSLObject``-derived signal) — see
+    ``waffy/proxy/standalone.py``. Consulted by the
     pipeline once per request via a plain ``Callable[[str, int], str | None]``
     (so ``waffy/http/pipeline.py`` never needs to import this proxy-layer
     module directly — it only takes a callable, preserving the one-way
@@ -308,44 +310,45 @@ class TlsFingerprintRegistry:
         return len(self._entries)
 
 
-def build_ja3_capturing_protocol(
+def build_fingerprint_aware_protocol(
     registry: TlsFingerprintRegistry,
-) -> type[asyncio.Protocol] | None:
-    """Return a uvicorn ``H11Protocol`` subclass that records a real,
-    handshake-derived TLS fingerprint into *registry* on every new
-    connection, or ``None`` if uvicorn's internal protocol class can't be
-    imported.
+    base_protocol_class: type[asyncio.Protocol],
+) -> type[asyncio.Protocol]:
+    """Return a subclass of *base_protocol_class* (uvicorn's resolved HTTP
+    protocol class, e.g. ``H11Protocol``) that records a post-handshake,
+    ``SSLObject``-derived fingerprint into *registry* on every new
+    connection -- but ONLY as a fallback: if *registry* already holds a
+    fingerprint for this peer (i.e. the pre-accept ``MSG_PEEK`` stage in
+    ``waffy/proxy/standalone.py::PreAcceptTlsServer`` already captured a
+    byte-accurate canonical JA3 for this connection), this never overwrites
+    it with the lower-fidelity signal. Always forgets the registry entry on
+    ``connection_lost``, regardless of which path recorded it.
 
-    Degrades gracefully by design: if this returns ``None``, standalone TLS
-    mode still runs correctly via uvicorn's default protocol — it just runs
-    without TLS fingerprint capture, exactly like plaintext mode already
-    documents for the no-JA3 case. The override only *adds* behavior after
-    delegating to the real implementation via ``super()`` — it never changes
-    HTTP parsing/handling, so it carries none of the correctness risk a
-    reimplemented HTTP layer would.
+    Unlike the prior ``build_ja3_capturing_protocol`` this replaces, the
+    base class is supplied by the caller (already resolved via
+    ``uvicorn.Config.http_protocol_class``) rather than imported here by
+    name — this function no longer needs to know or guess which concrete
+    uvicorn protocol implementation is in use.
     """
-    try:
-        from uvicorn.protocols.http.h11_impl import H11Protocol
-    except ImportError:
-        logger.warning(
-            "uvicorn.protocols.http.h11_impl.H11Protocol not importable; "
-            "TLS fingerprint capture disabled for this listener (neutral, not fatal)."
-        )
-        return None
 
-    class Ja3CapturingH11Protocol(H11Protocol):
-        """H11Protocol that also records a TLS fingerprint per connection."""
+    class _FingerprintAwareProtocol(base_protocol_class):  # type: ignore[misc]
+        """Wraps *base_protocol_class* to add fallback TLS-fingerprint capture."""
 
-        def connection_made(self, transport: asyncio.Transport) -> None:
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
             super().connection_made(transport)
             try:
-                ssl_object = transport.get_extra_info("ssl_object")
                 peername = transport.get_extra_info("peername")
-                if ssl_object is not None and peername is not None:
+                if peername is None:
+                    return
+                peer = (peername[0], peername[1])
+                if registry.get(*peer) is not None:
+                    return  # a higher-fidelity peek result already exists
+                ssl_object = transport.get_extra_info("ssl_object")
+                if ssl_object is not None:
                     fingerprint = compute_fingerprint_from_ssl_object(ssl_object)
-                    registry.record((peername[0], peername[1]), fingerprint)
+                    registry.record(peer, fingerprint)
             except Exception:
-                logger.debug("TLS fingerprint capture failed for a connection", exc_info=True)
+                logger.debug("Fallback TLS fingerprint capture failed", exc_info=True)
 
         def connection_lost(self, exc: Exception | None) -> None:
             transport = getattr(self, "transport", None)
@@ -356,50 +359,19 @@ def build_ja3_capturing_protocol(
             finally:
                 super().connection_lost(exc)
 
-    return Ja3CapturingH11Protocol
+    return _FingerprintAwareProtocol
 
 
 TlsFingerprintLookup = Callable[[str, int], "str | None"]
 
 
-def build_standalone_uvicorn_config(
-    app: Any,
-    ssl_context: ssl.SSLContext,
-    *,
-    host: str = "0.0.0.0",
-    port: int = 443,
-    fingerprint_registry: TlsFingerprintRegistry | None = None,
-) -> Any:
-    """Build the ``uvicorn.Config`` for standalone TLS mode, wiring in the
-    real ``ssl.SSLContext`` from ``build_ssl_context()`` and, when a registry
-    is supplied, real TLS ClientHello-derived fingerprint capture.
-
-    Returns ``uvicorn.Config`` (typed ``Any`` here to avoid an unconditional
-    top-level ``import uvicorn`` in this module — uvicorn is already a
-    project dependency, imported lazily to keep this module importable in
-    contexts that don't need a real server, e.g. pure unit tests of
-    ``compute_ja3``/``parse_client_hello``).
-    """
-    import uvicorn
-
-    registry = fingerprint_registry or TlsFingerprintRegistry()
-    http_protocol = build_ja3_capturing_protocol(registry) or "auto"
-    return uvicorn.Config(
-        app=app,
-        host=host,
-        port=port,
-        ssl_context_factory=lambda _cfg, _default: ssl_context,
-        http=http_protocol,
-        lifespan="off",
-    )
-
-
 __all__ = [
+    "MAX_CLIENT_HELLO_BYTES",
+    "TLS_HANDSHAKE_RECORD_TYPE",
     "ClientHelloInfo",
     "TlsFingerprintLookup",
     "TlsFingerprintRegistry",
-    "build_ja3_capturing_protocol",
-    "build_standalone_uvicorn_config",
+    "build_fingerprint_aware_protocol",
     "compute_fingerprint_from_ssl_object",
     "compute_ja3",
     "parse_client_hello",

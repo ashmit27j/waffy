@@ -12,6 +12,15 @@ Architecture
 - The client half of this protocol will be built in Phase 8 alongside
   ``waffy-api``.
 
+Windows development note
+-------------------------
+``asyncio.start_unix_server`` (used by this module) requires
+``socket.AF_UNIX``, which native Windows Python does not provide. Developing
+or running the test suite on a Windows machine requires WSL (Windows
+Subsystem for Linux) — run everything under a WSL Ubuntu shell against the
+repo path (e.g. ``/mnt/d/...``), not native Windows Python. See
+``README.md``'s Prerequisites section and ``docs/DEPLOYMENT.md``.
+
 Security notes
 --------------
 - Only the ``waffy-core`` service user and the ``waffy-api`` service user

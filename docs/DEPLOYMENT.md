@@ -4,6 +4,16 @@ This document describes the three deployment modes waffy supports, provides
 concrete example configurations for each, and states the key trade-offs plainly
 so that operators can make an informed choice.
 
+> **Platform note**: waffy's IPC layer (`waffy/ipc/`) requires
+> `socket.AF_UNIX` (via `asyncio.start_unix_server`) between the
+> `waffy-core` and `waffy-api` processes, which native Windows Python does
+> not provide — Windows-based development or testing requires WSL (see
+> `README.md`'s Prerequisites section). Standalone TLS mode's JA3-capture
+> pre-accept stage separately requires `socket.MSG_PEEK`, also POSIX-only
+> (see the "TLS fingerprint (JA3) capture stage" section below) — an
+> unrelated subsystem that happens to share the same "deploy on Linux"
+> practical conclusion.
+
 > **Fail-open / fail-closed (spec §15)**
 >
 > The default shipped configuration is `FAIL_OPEN` in `SHADOW` mode.  In
@@ -81,6 +91,36 @@ systemctl start waffy-core
 # Development / manual
 uv run python -m waffy.runtime.core_daemon --config config/waffy.toml
 ```
+
+### TLS fingerprint (JA3) capture stage
+
+Standalone TLS mode's listener (`waffy.proxy.standalone.PreAcceptTlsServer`)
+peeks each connection's raw ClientHello via `socket.MSG_PEEK` *before* the
+TLS handshake starts, to compute a byte-accurate canonical JA3 fingerprint —
+see `docs/ARCHITECTURE.md`'s prompts/13b entry for the full design and why a
+custom accept loop was necessary. This is a pre-accept stage specific to
+standalone mode; plaintext and embedded/middleware modes never terminate TLS
+themselves and are unaffected.
+
+```toml
+[tls]
+# "clienthello_peek" (default): byte-accurate canonical JA3 via a pre-accept
+#   socket.MSG_PEEK. Falls back per-connection to "post_handshake"'s signal
+#   if the peek fails or times out (malformed/truncated hello, non-TLS
+#   traffic, a slow client) -- never fails the connection itself.
+# "post_handshake": skip the peek entirely; always use the lower-fidelity,
+#   post-handshake SSLObject-derived signal (the pre-prompts/13b behavior).
+#   Use this to revert to the old behavior without a code change if the
+#   pre-accept stage misbehaves in production.
+# "disabled": capture nothing; TLS fingerprint stays neutral/absent, same
+#   as plaintext mode.
+ja3_capture_mode = "clienthello_peek"
+```
+
+**Linux-only**: `socket.MSG_PEEK` is POSIX-only — see this document's
+platform note above (the IPC layer's `socket.AF_UNIX` requirement is a
+separate, unrelated reason waffy is already Linux-coupled). Not verified on
+native Windows sockets.
 
 ---
 

@@ -27,6 +27,32 @@ class TransportConfig(BaseModel):
     timeout_seconds: float = Field(default=30.0, gt=0.0)
 
 
+class TlsConfig(BaseModel):
+    """Standalone-TLS-mode TLS fingerprint capture configuration.
+
+    ``ja3_capture_mode`` selects how ``waffy.proxy.standalone.PreAcceptTlsServer``
+    derives a per-connection TLS fingerprint:
+
+    - ``"clienthello_peek"`` (default): byte-accurate canonical JA3 via a
+      pre-TLS-accept ``socket.MSG_PEEK`` of the raw ClientHello (see
+      ``docs/ARCHITECTURE.md``'s prompts/13b write-up). Falls back to
+      ``"post_handshake"``'s signal automatically, per-connection, if the
+      peek fails or times out (malformed/truncated hello, non-TLS traffic,
+      slow client) -- never fails the connection itself.
+    - ``"post_handshake"``: skips the pre-accept peek entirely and always
+      uses the lower-fidelity, post-handshake ``SSLObject``-derived signal
+      (``waffy-tlsfp-v1:`` prefix) -- the pre-prompts/13b production
+      behavior, kept as an operator-selectable revert path in case the peek
+      stage misbehaves in production.
+    - ``"disabled"``: no TLS fingerprint is captured at all; bot-detection's
+      TLS fingerprint check stays neutral (absent), same as plaintext mode.
+    """
+
+    ja3_capture_mode: Literal["clienthello_peek", "post_handshake", "disabled"] = (
+        "clienthello_peek"
+    )
+
+
 class HttpConfig(BaseModel):
     """HTTP framing, size bounds, and decompression limits."""
 
@@ -267,6 +293,7 @@ class WaffyConfig(BaseModel):
     """Root configuration model combining all subsystems."""
 
     transport: TransportConfig = Field(default_factory=TransportConfig)
+    tls: TlsConfig = Field(default_factory=TlsConfig)
     http: HttpConfig = Field(default_factory=HttpConfig)
     http_limits: HttpLimitsConfig = Field(default_factory=HttpLimitsConfig)
     detection: DetectionConfig = Field(default_factory=DetectionConfig)

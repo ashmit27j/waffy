@@ -218,25 +218,120 @@ Two candidate ways around this were evaluated, both rejected:
    most likely be dropped rather than transferred, breaking every single TLS
    connection to standalone mode silently.
 
-**Conclusion**: both concrete paths to byte-perfect canonical JA3 in
-standalone TLS mode require either reimplementing uvicorn's
+**Conclusion (prompts/13, historical)**: both concrete paths to byte-perfect
+canonical JA3 in standalone TLS mode require either reimplementing uvicorn's
 connection-acceptance/TLS-upgrade internals from scratch, or relying on
 undocumented, version-fragile CPython internals in a security-critical code
-path. Per this task's explicit "stop and report rather than force a fragile
-fix" instruction, **no implementation was attempted**. The existing
-`compute_fingerprint_from_ssl_object()` real-signal fallback (see above)
-remains the production path, unchanged. The "not byte-identical to canonical
-JA3" caveat **stands** — it is not resolved by this investigation, only more
-precisely explained. A future attempt should budget for a genuine
-custom-accept-loop implementation (option 1 above) as a standalone,
-carefully-tested project, not an incremental addition to the existing
-`build_ja3_capturing_protocol` subclassing approach.
+path. Per that task's explicit "stop and report rather than force a fragile
+fix" instruction, no implementation was attempted at the time. **This
+conclusion was later revisited and option 1 was in fact built — see the
+prompts/13b entry immediately below.**
+
+### prompts/13b — Byte-Accurate Canonical JA3, Implemented (supersedes the prompts/13 blocker above)
+
+**Outcome: option 1 above (a parallel raw-socket accept loop using
+`socket.MSG_PEEK`) was implemented as `waffy.proxy.standalone.PreAcceptTlsServer`,
+tested against real TLS handshakes including GREASE-bearing ClientHellos, and
+is production-usable behind an explicit config toggle.** The prompts/13
+investigation's technical analysis of *why* this is hard (reproduced above)
+remains accurate — this was a genuine, carefully-tested custom-accept-loop
+project, not an incremental patch, exactly as that investigation recommended
+any future attempt should be scoped.
+
+**What changed, concretely**:
+
+- `PreAcceptTlsServer` owns its own TCP accept loop (`loop.sock_accept()` on
+  a socket bound via `uvicorn.Config.bind_socket()`, so port-binding/backlog
+  semantics stay identical to uvicorn's own listener) instead of delegating
+  to `loop.create_server(ssl=...)`. This sidesteps the exact obstacle
+  prompts/13 identified: nothing asyncio-managed touches the socket before
+  the peek happens, so `socket.MSG_PEEK` semantics are genuine, not
+  approximated.
+- `peek_client_hello_bytes()` peeks the bare `socket.socket` directly
+  (non-blocking `sock.recv(n, socket.MSG_PEEK)` plus `loop.add_reader()` to
+  wait for more without blocking the event loop), bounded on both size
+  (`MAX_CLIENT_HELLO_BYTES` — the same 16640-byte cap `parse_client_hello`
+  already enforced) and wall-clock time (`peek_timeout_seconds`, default
+  2.0s) — never an unbounded read against attacker-controlled input, per
+  `CLAUDE.md`. A malformed/truncated declared record length is handled the
+  same way `parse_client_hello` already handled it: capped, never looped.
+- Once the ClientHello bytes are peeked (not consumed), the *same untouched
+  socket* is handed to `loop.create_connection(_NullPlainProtocol, sock=...)`
+  and then `asyncio.loop.start_tls()` — the public, documented API — to
+  perform the real handshake. `parse_client_hello`/`compute_ja3` (unchanged
+  since prompts/04) then compute the byte-accurate canonical JA3 from the
+  peeked bytes, including RFC 8701 GREASE stripping — verified with a real
+  captured Chrome-shaped ClientHello in `test_ja3_filters_grease_values`
+  (prompts/04, still passing) and end-to-end against a real client
+  connection in `test_preaccept_peek_produces_correct_canonical_ja3`
+  (prompts/13b).
+- **Fails closed on the fingerprint only, never the connection**: if the peek
+  times out, the client sends non-TLS traffic, or parsing fails for any
+  reason, `PreAcceptTlsServer` falls through to
+  `build_fingerprint_aware_protocol()`'s existing post-handshake
+  `SSLObject`-derived signal (prompts/04's fallback) for that one connection
+  — the handshake and request are never dropped because of a peek failure.
+  Proven by `test_graceful_fallback_non_tls_traffic_and_peek_timeout`: a
+  connection that sends garbage or nothing at all is closed cleanly, bounded
+  by `peek_timeout_seconds` + `handshake_timeout_seconds`, and the listener
+  keeps serving normal clients afterward without restart.
+- **Operator revert switch**: `waffy.config.models.TlsConfig.ja3_capture_mode`
+  (`"clienthello_peek"` default / `"post_handshake"` / `"disabled"`) lets an
+  operator disable the new pre-accept stage without a code change if it
+  misbehaves in production — `"post_handshake"` skips the peek entirely and
+  always uses the pre-13b `SSLObject`-derived signal;
+  `"disabled"` captures nothing at all, matching plaintext mode's neutral
+  no-JA3 contract. Covered by
+  `test_capture_mode_post_handshake_skips_peek_uses_ssl_object_signal` and
+  `test_capture_mode_disabled_never_populates_registry`.
+- **TLS version floor unchanged**: `PreAcceptTlsServer` is handed the exact
+  `ssl.SSLContext` `build_ssl_context()` already produces (still `TLSv1_2`
+  minimum) — the new accept loop only decides *when* the handshake starts
+  (after a peek instead of immediately), never *how* (cipher/version
+  policy).
+- **Linux-only assumption, correctly scoped**: `socket.MSG_PEEK` is POSIX;
+  this is only exercised on the project's WSL/Linux dev and CI environment.
+  This is a *separate* Linux dependency from the one `CLAUDE.md` already
+  documents for the IPC layer (`socket.AF_UNIX`/`asyncio.start_unix_server`)
+  — both point at the same practical constraint (deploy on Linux) but for
+  different subsystems; conflating them would understate how POSIX-coupled
+  this project already is. Not verified on native Windows sockets — the
+  Windows/WSL development note (`README.md`, `docs/DEPLOYMENT.md`) covers
+  development only, not a claim that either subsystem runs on native
+  Windows in production.
+- **Scope not covered**: `PreAcceptTlsServer` is a standalone, directly
+  testable/usable class — it is not yet wired into
+  `waffy/runtime/core_daemon.py`'s startup sequence, matching the
+  pre-existing, already-documented gap (prompts/07's Task 07 entry in
+  `docs/PROGRESS.md`) that `core_daemon.py`/`waffy/runtime/__main__.py` does
+  not yet construct or bind a real standalone-mode listener at all — that
+  wiring is future work independent of this task, not a regression
+  introduced here.
+
+**Tests** (`tests/integration/test_task13b_preaccept_ja3.py`, all real TLS,
+skip — not fail — if `openssl` isn't on `PATH`, matching prompts/03's
+convention): byte-accurate canonical JA3 matches an independently-computed
+reference for the exact same client config
+(`test_preaccept_peek_produces_correct_canonical_ja3`); a real end-to-end
+HTTPS request through `WaffyPipelineApplication` to a fake upstream still
+completes normally, proving no bytes are lost
+(`test_real_handshake_completes_through_preaccept_stage`); both non-TLS
+traffic and a silent connection degrade gracefully and boundedly
+(`test_graceful_fallback_non_tls_traffic_and_peek_timeout`); both
+`ja3_capture_mode` revert paths behave as documented (the two tests named
+above). `docs/PROGRESS.md`'s Task 13 entry is preserved as-is (that
+investigation happened and was accurate) with a pointer added to this
+prompts/13b entry rather than being rewritten.
 
 **Known-bad fingerprint list**: `config.bot_detection.known_bad_tls_fingerprints`
 (`waffy/config/models.py::BotDetectionConfig`) is an empty-by-default,
 operator-managed local list — not a live threat-intel feed. Values can be
-either canonical JA3 hashes (once the follow-up above exists) or today's
-`waffy-tlsfp-v1:`-prefixed values.
+either byte-accurate canonical JA3 hashes (32-char hex, when
+`tls.ja3_capture_mode = "clienthello_peek"`, the default — see prompts/13b
+above) or `waffy-tlsfp-v1:`-prefixed values (when `ja3_capture_mode` is
+`"post_handshake"` or a same-connection peek fallback occurred). An operator
+populating this list should know which mode their deployment runs in, since
+the two value shapes are not interchangeable.
 
 **FIXED in prompts/11** (see `docs/PROGRESS.md`'s dedicated Task 11 entry for
 the commit): `config/default_config.toml`'s `[bot]` TOML section didn't
