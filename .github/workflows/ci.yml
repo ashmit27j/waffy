@@ -41,3 +41,28 @@ jobs:
 
       - name: pytest
         run: uv run pytest -q
+
+  dependency-audit:
+    name: pip-audit (known-vulnerable dependency scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.12.7"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra ml
+
+      # pip-audit run against the already-synced environment (not a fresh
+      # `--requirement` resolve into a new venv -- that path needs
+      # ensurepip/python3-venv, which isn't guaranteed present) so it scans
+      # exactly what uv.lock actually resolved and installed. `waffy` itself
+      # is skipped as "not found on PyPI" -- expected, it's this repo, not a
+      # scan target.
+      - name: pip-audit
+        run: uv run --with pip-audit pip-audit
