@@ -48,6 +48,11 @@ A few notes:
   (`tests/integration/`, marked `tls_integration`, requiring the `openssl`
   CLI on `PATH` — they skip, not fail, if it's absent). Neither category
   needs special setup beyond `uv sync --extra dev`.
+- To measure test coverage locally: `uv run pytest --cov=waffy --cov-report=term-missing`.
+  CI enforces an 80% floor (`[tool.coverage.report].fail_under` in
+  `pyproject.toml`) — see `docs/PROGRESS.md` for the currently measured
+  percentage. Raise the floor as coverage genuinely improves; never lower
+  it to make a regression pass.
 - To run the synthetic attack-lab corpus (true-positive/false-positive
   measurement, not part of the pytest suite by default):
   `uv run python scripts/attack-lab/run_corpus.py --report`.

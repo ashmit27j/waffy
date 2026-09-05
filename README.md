@@ -3,6 +3,7 @@
 ![waffy](Waffy-banner.png)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Coverage: 82%](https://img.shields.io/badge/coverage-82%25-brightgreen.svg)](docs/PROGRESS.md)
 
 A standalone, per-host application-layer Web Application Firewall (WAF) built in Python. 
 
