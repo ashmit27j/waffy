@@ -533,3 +533,98 @@ task's acceptance criteria, for documentation/future-wiring consistency
 with every other category already listed there, but this addition has the
 same no-op-today status as the other ten entries already in that list —
 not a new or SSRF-specific gap.
+
+## Known Scope Boundaries (Step B4)
+
+`docs/MASTER_SPEC.md` never states whether GraphQL-specific attack patterns
+or WebSocket traffic are in scope. This section states both boundaries
+explicitly, based on directly reading the current code (not assumption).
+
+### GraphQL
+
+**Partially covered, by accident of the generic HTTP layer, not by design.**
+A GraphQL-over-HTTP request is, at the transport level, just a POST with an
+`application/json` body shaped like `{"query": "...", "variables": {...}}`.
+`waffy/http/body.py::parse_body()`'s JSON branch parses that body into
+`parsed_body_summary` as an ordinary dict, and
+`waffy/detection/signatures/engine.py::_extract_nested_values()` already
+walks it recursively — so the literal text of a GraphQL query/variable
+value **is** scanned by every existing signature category (SQLi, XSS,
+command injection, SSTI, SSRF, etc.) exactly as if it were any other JSON
+field, with zero GraphQL-specific code required. An attacker embedding a
+classic injection payload inside a GraphQL argument value gets the same
+coverage a REST JSON body would.
+
+**Not covered — genuinely out of scope today, no GraphQL-aware module exists**:
+
+- **Introspection abuse**: a `{__schema{...}}` / `{__type(name:...){...}}`
+  query is syntactically ordinary GraphQL text with no injection-shaped
+  substring in it — none of the negative-security signatures have any
+  reason to match it, and nothing in this codebase parses GraphQL syntax
+  well enough to recognize `__schema`/`__type` as introspection fields
+  specifically (as opposed to legitimate field names an application might
+  happen to define).
+- **Batching / aliasing DoS**: `waffy/detection/ratelimit/engine.py`'s
+  limiters count HTTP requests, not GraphQL operations — a single POST
+  containing a batched array of operations, or one query with many aliased
+  fields, is one rate-limit unit no matter how much backend work it causes.
+  There is no query-complexity or query-depth analysis anywhere in this
+  codebase.
+- **Positive security** (`waffy/detection/positive/`) validates path/method/
+  parameter shape per route — it has no concept of a GraphQL schema, so it
+  cannot constrain what operations or fields a `/graphql` endpoint's body
+  may contain beyond the generic JSON-field checks already described above.
+
+**Conclusion**: treat GraphQL endpoints as "protected against generic
+injection the same as any JSON API, not protected against GraphQL-specific
+abuse." A dedicated GraphQL-aware detection module (introspection-query
+signature, complexity/depth scoring, batch-size limits) would be new,
+explicitly-scoped work for a future phase — nothing here should be read as
+implying that coverage already exists.
+
+### WebSocket
+
+**Actively denied in all three deployment modes — not "passed through
+uninspected," and not "reduced protection." Verified directly by reading
+the ASGI dispatch code in all three, not assumed:**
+
+- `waffy/http/pipeline.py::WaffyPipelineApplication.__call__` and
+  `waffy/http/transport.py::ProxyApplication.__call__` (standalone TLS and
+  plaintext proxy modes both construct one of these two ASGI apps as their
+  listener) both start with `if scope["type"] != "http": return
+  Response(b"Not Implemented", status_code=501)(...)`. A `"websocket"`
+  scope hits this branch every time.
+- `waffy/middleware/asgi.py::WaffyMiddleware.__call__` (embedded mode)
+  explicitly special-cases `"websocket"` into the *inspected* path — its
+  guard is `if scope["type"] not in ("http", "websocket"): pass through
+  unchanged` — so unlike a truly opaque type it would otherwise pass
+  through to the wrapped app, a websocket scope is deliberately routed into
+  `self.pipeline(...)`, which is `WaffyPipelineApplication`, which then
+  hits the same `!= "http"` branch above and denies it.
+- Because Starlette's `Response.__call__` special-cases
+  `scope["type"] == "websocket"` (confirmed by reading Starlette's actual
+  source in this project's environment: it wraps `send` via
+  `_wrap_websocket_denial_send`, translating the http-response-shaped send
+  calls into the ASGI WebSocket Denial Response extension), this 501 is
+  delivered as a clean, spec-compliant handshake denial rather than a
+  protocol violation or a crash — so the *mechanism* is not buggy.
+
+**The practical consequence is real and worth stating plainly**: an
+operator running a Python ASGI application that uses WebSockets (e.g. a
+FastAPI app with a `/ws` endpoint) and wrapping it with `WaffyMiddleware`
+will find that endpoint's WebSocket upgrade **entirely non-functional**
+through waffy — every connection attempt is denied with a 501 handshake
+response, regardless of what the wrapped app would have done with it. The
+same is true for any WebSocket upgrade attempt directed at a standalone-TLS
+or plaintext-proxy listener. This is not a partial-protection caveat like
+the plaintext-mode TLS-signal-degradation table above — it is a hard
+functional gap for any application that needs WebSockets working through
+waffy today.
+
+**Conclusion**: WebSocket support (inspecting or even passing through
+WebSocket frames) is unimplemented and explicitly out of scope for this
+release. An operator with a WebSocket-dependent application must either run
+that traffic through a separate path that bypasses waffy entirely, or wait
+for a future phase to add WebSocket frame inspection (which would need its
+own detection surface — HTTP signature categories don't map cleanly onto a
+persistent bidirectional message stream).
