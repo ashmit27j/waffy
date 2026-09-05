@@ -2,7 +2,9 @@
 
 ![waffy](Waffy-banner.png)
 
+[![CI](https://github.com/ashmit27j/waffy/actions/workflows/ci.yml/badge.svg)](https://github.com/ashmit27j/waffy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
 [![Coverage: 82%](https://img.shields.io/badge/coverage-82%25-brightgreen.svg)](docs/PROGRESS.md)
 
 A standalone, per-host application-layer Web Application Firewall (WAF) built in Python. 
@@ -44,21 +46,41 @@ waffy can be deployed in three different ways depending on your architecture. Se
 
 ## Quickstart
 
-The recommended path to deploying waffy in production is a gradual escalation of enforcement, identical to the path used by pirewall. **Do not deploy straight to ACTIVE mode.**
+### Try it in a couple of minutes (Docker)
 
-1. **Configure and start in `SHADOW` mode.**
-   - In `config.toml`, set `enforcement_mode = "SHADOW"`. 
+The fastest way to see waffy actually inspecting traffic, no manual setup
+required — brings up waffy-core, waffy-api, and a trivial demo backend:
+
+```bash
+docker compose up --build -d
+curl http://localhost:18080/hello                 # a normal request, forwarded to the demo backend
+curl "http://localhost:18080/products?id=1%20UNION%20SELECT%20null,username,password%20FROM%20users"
+docker compose logs waffy-core                     # see the SQLi payload above get detected and scored
+docker compose down -v
+```
+
+This is an evaluation/dev convenience, not the production deployment path
+— see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)'s "Docker Evaluation
+Stack" section for what it does and doesn't prove.
+
+### Production rollout: gradual escalation of enforcement
+
+The recommended path to deploying waffy in production is a gradual escalation of enforcement, identical to the path used by pirewall. **Do not deploy straight to `active` mode.**
+
+1. **Configure and start in `shadow` mode** (the shipped default —
+   nothing to change to get this).
+   - In your config TOML's `[enforcement]` section: `mode = "shadow"`.
    - waffy will log threats and emit events to the SIEM/Control Panel but will *never* block a request.
 
 2. **Observe and tune.**
    - Let waffy run for a few days. Review the Control Panel or your SIEM for false positives.
    - Add allowlist entries for internal scanners or unusual-but-benign application traffic.
 
-3. **Escalate to `ASSISTED` (Optional)**
-   - (If supported by your integration): Allow waffy to block, but route blocks to a human review queue first.
+3. **Escalate to `assisted` (optional).**
+   - Auto-applies low-risk actions while queuing higher-risk ones for operator review via the Management API's pending-approval endpoints — see [`docs/API.md`](docs/API.md).
 
-4. **Enable `ACTIVE` mode.**
-   - Once the false positive rate is near zero, set `enforcement_mode = "ACTIVE"` via the Management API or config. waffy will now actively block malicious requests and enforce rate limits.
+4. **Enable `active` mode.**
+   - Once the false positive rate is near zero, set `[enforcement] mode = "active"` via config or the Management API's `POST /api/v1/mode`. waffy will now actively block malicious requests and enforce rate limits.
 
 ## Documentation
 
@@ -69,6 +91,20 @@ The recommended path to deploying waffy in production is a gradual escalation of
 - [Interoperability](docs/INTEROP.md) - Correlating events with pirewall in a SIEM.
 - [Project Summary](docs/PROJECT_SUMMARY.md) - Overview of current state and limitations.
 - [Implementation Progress](docs/PROGRESS.md) - Phase-by-phase tracking.
+- [Changelog](CHANGELOG.md) - Notable changes, release by release.
+
+## Contributing
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev
+environment setup, how to run the checks locally, and what a pull request
+should include. Participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Reporting a security vulnerability
+
+Please don't open a public issue for a security vulnerability in waffy
+itself — see [`SECURITY.md`](SECURITY.md) for the private reporting
+process.
 
 ## License
 
