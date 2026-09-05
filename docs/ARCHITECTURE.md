@@ -355,6 +355,27 @@ any future attempt should be scoped.
   no-JA3 contract. Covered by
   `test_capture_mode_post_handshake_skips_peek_uses_ssl_object_signal` and
   `test_capture_mode_disabled_never_populates_registry`.
+
+  **Known flaky test, found later (Step C8), not fixed in this session**:
+  `test_capture_mode_post_handshake_skips_peek_uses_ssl_object_signal`
+  fails intermittently — measured at a ~6.7% (1/15) failure rate in a
+  dedicated repeated run. The failure is `registry.get(...)` returning
+  `None` after a real handshake, meaning
+  `_FingerprintAwareProtocol.connection_made` (in
+  `build_fingerprint_aware_protocol`, `waffy/proxy/tls_fingerprint.py`)
+  sometimes doesn't successfully read `ssl_object`/`peername` off the
+  transport `loop.start_tls()` returns, in the specific "manual protocol,
+  deferred `connection_made()` call" wiring `PreAcceptTlsServer` uses (see
+  `_handle_connection` in `waffy/proxy/standalone.py`) — plausibly a race
+  between the test's blocking client closing its socket immediately after
+  the handshake and this manual protocol-attachment sequence, though not
+  root-caused with certainty. This only affects the `"post_handshake"`
+  *revert* path (an operator opt-out from the default), not the default
+  `"clienthello_peek"` capture mode, which has shown no flakiness across
+  everything run this session. Left as a known, measured, open issue for a
+  future session rather than guessed at under time pressure in the middle
+  of an unrelated Docker-focused step (Step C8) — see
+  `docs/PROGRESS.md`'s Step C8 entry.
 - **TLS version floor unchanged**: `PreAcceptTlsServer` is handed the exact
   `ssl.SSLContext` `build_ssl_context()` already produces (still `TLSv1_2`
   minimum) — the new accept loop only decides *when* the handshake starts

@@ -1,0 +1,62 @@
+# Evaluation/dev convenience stack: waffy-core + waffy-api + a trivial demo
+# upstream app, for quickly trying waffy without a manual systemd setup.
+# NOT a replacement for the documented production path
+# (deploy/systemd/waffy-core.service) -- see docs/DEPLOYMENT.md.
+#
+# Defaults to SHADOW enforcement mode and fail_open (docker/waffy-config.toml),
+# consistent with every other default in this project.
+#
+# Try it:
+#   docker compose up --build -d
+#   curl http://localhost:18080/hello              # through waffy -> demo upstream
+#   curl -H "Authorization: Bearer CHANGE_ME" http://localhost:19090/api/v1/status
+#
+# Host-side ports are 18080/19090 (not 8080/9090) specifically so this demo
+# doesn't collide with another local service already using the more common
+# ports -- the containers themselves still listen on 8080/9090 internally,
+# matching docker/waffy-config.toml.
+
+services:
+  demo-upstream:
+    build: ./docker/demo-app
+    networks: [waffynet]
+
+  waffy-core:
+    build: .
+    command: ["python", "-m", "waffy.runtime.serve_core"]
+    environment:
+      WAFFY_CONFIG: /etc/waffy/config.toml
+    volumes:
+      - ./docker/waffy-config.toml:/etc/waffy/config.toml:ro
+      - ipc-socket:/run/waffy
+    ports:
+      - "18080:8080"
+    depends_on:
+      - demo-upstream
+    networks: [waffynet]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/waffy/core.sock')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  waffy-api:
+    build: .
+    command: ["python", "-m", "waffy.runtime.serve_api"]
+    environment:
+      WAFFY_CONFIG: /etc/waffy/config.toml
+    volumes:
+      - ./docker/waffy-config.toml:/etc/waffy/config.toml:ro
+      - ipc-socket:/run/waffy
+    ports:
+      - "19090:9090"
+    depends_on:
+      waffy-core:
+        condition: service_healthy
+    networks: [waffynet]
+
+volumes:
+  ipc-socket:
+
+networks:
+  waffynet:

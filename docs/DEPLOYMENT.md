@@ -406,6 +406,101 @@ case, not a misconfiguration.
 
 ---
 
+## Docker Evaluation Stack (Step C8)
+
+For quickly trying waffy without a manual systemd setup, `Dockerfile` +
+`docker-compose.yml` at the repo root bring up a three-container stack:
+`demo-upstream` (a trivial stdlib-only stand-in for "your application"),
+`waffy-core` (plaintext proxy mode, per `docker/waffy-config.toml`), and
+`waffy-api` (the management API, connected to `waffy-core` over a shared
+Unix-domain-socket volume).
+
+**This is an evaluation/dev convenience, not a replacement for the
+documented production systemd path** (`deploy/systemd/waffy-core.service`)
+— parity between the two has not been independently verified, and the
+Docker image deliberately skips systemd-specific concerns (sd_notify,
+watchdog, graceful drain) that `waffy/runtime/core_daemon.py` handles for
+the real daemon.
+
+```bash
+docker compose up --build -d
+curl http://localhost:18080/hello                                          # through waffy -> demo upstream
+curl -H "Authorization: Bearer CHANGE_ME" http://localhost:19090/api/v1/status
+docker compose down -v
+```
+
+Host-side ports are `18080`/`19090` (not `8080`/`9090`) specifically to
+avoid colliding with another local service already using the more common
+ports — the containers themselves still listen on `8080`/`9090` internally.
+
+**Defaults**: `docker/waffy-config.toml` ships `enforcement.mode = "shadow"`
+and `enforcement.failure_mode = "fail_open"` explicitly (restated, not
+silently relied upon), consistent with every other default in this
+project. `api.management_cidrs = ["0.0.0.0/0", "::/0"]` is loosened from
+the real default specifically for this eval stack — a `curl` from the host
+machine arrives at the container as coming from the Docker bridge gateway,
+not `127.0.0.1` — **do not carry this CIDR setting into a real deployment.**
+
+**New entrypoint scripts** (`waffy/runtime/serve_core.py`,
+`waffy/runtime/serve_api.py`): built specifically so this Docker stack has
+something real to run — `waffy/runtime/core_daemon.py::CoreDaemon` (the
+spec-shaped daemon with sd_notify/drain) has never actually bound a network
+listener; its own code comment says so. These new scripts wire the real
+plaintext-proxy pipeline and the real management API, respectively, and are
+explicitly scoped as eval/Docker entrypoints, not the production daemon.
+
+**Verified working this session, output pasted in `docs/PROGRESS.md`'s
+Step C8 entry**: `docker build` succeeded for all three images; `docker
+compose up` brought up a healthy stack; a `curl` through `waffy-core` to
+`demo-upstream` returned the demo app's real response; sending a SQL-
+injection payload through the same proxy produced a logged
+`SHADOW [...]: proposed action=block, score=50.0, reasons=['High-
+confidence signature match (sqli)', ...]` server-side log line — proof
+waffy is actually inspecting traffic, not blindly forwarding it, while
+correctly respecting `SHADOW` mode's fail-safe non-blocking contract; both
+containers confirmed running as the non-root `waffy` user (uid 10001); the
+management API's `/api/v1/health` returned `ipc_reachable: true`, proving
+the two containers really talk to each other over the shared Unix socket
+volume.
+
+**Two real gaps found while making this actually work, not silently
+patched around**:
+
+1. **The `ml` optional-dependency group is not actually optional at import
+   time.** `waffy/http/pipeline.py` unconditionally imports
+   `waffy.detection.anomaly.scorer` → `waffy.detection.anomaly.baseline` →
+   `joblib` at module scope — so `python -m waffy.runtime.serve_core` fails
+   with `ModuleNotFoundError` before it can even start unless the `ml`
+   extra is installed, even though nothing in the Docker eval entrypoints
+   ever instantiates `AnomalyScorer`. Worked around in `Dockerfile` by
+   installing `--extra ml` in the runtime image (a real size/build-time
+   cost, not a code fix) — the actual fix (lazy-importing `joblib` inside
+   `waffy/detection/anomaly/baseline.py`, or making
+   `waffy/http/pipeline.py`'s anomaly import conditional) is a different
+   module's concern and out of scope for this Docker-focused step.
+2. **`WaffyPipelineApplication`'s observability outputs are wired to
+   nothing live.** The `event_sink` constructor parameter is stored
+   (`self.event_sink = event_sink`) but never actually called anywhere in
+   `waffy/http/pipeline.py` — confirmed by grep. Separately,
+   `waffy.ipc.server.IpcStateStore.record_event`/`record_assessment` (which
+   back the `/api/v1/events` and `/api/v1/requests` management-API feeds)
+   have no caller anywhere connecting them to live pipeline traffic either.
+   Discovered by actually curling both endpoints after a real attack
+   request through the live Docker stack and finding them empty
+   (`{"ok":true,"events":[],"count":0}`) despite the request being
+   genuinely scored and logged (visible in `waffy-core`'s own stdout, per
+   the SHADOW log line above). This means, as shipped today, **the
+   management API's events/requests feeds and any configured `EventSink`
+   (e.g. the SIEM syslog integration) never receive live traffic from a
+   real running pipeline** — the wiring exists on both ends
+   (`WaffyPipelineApplication` accepts an `event_sink`;
+   `IpcServer`/`IpcStateStore` can serve recorded events) but nothing
+   connects them. This is a more significant, pre-existing finding than
+   this Docker step's own scope — flagged here for a dedicated future task,
+   not fixed as a side effect of writing a Docker Compose example.
+
+---
+
 ## Fail-open / Fail-closed Summary (spec §15)
 
 | Setting | Behaviour on waffy internal error |

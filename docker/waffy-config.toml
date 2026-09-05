@@ -1,0 +1,28 @@
+# Example configuration for the docker-compose evaluation stack.
+# See docs/DEPLOYMENT.md -- this is an evaluation/dev convenience, NOT a
+# production configuration template (see the CIDR note below).
+
+[transport]
+mode = "plaintext"
+host = "0.0.0.0"
+port = 8080
+upstream_url = "http://demo-upstream:9000"
+
+[api]
+host = "0.0.0.0"
+port = 9090
+ipc_socket_path = "/run/waffy/core.sock"
+# WARNING: 0.0.0.0/0 is permissive-by-design for this eval stack only, so a
+# `curl` from the host machine (which arrives at the container as coming
+# from the Docker bridge gateway, not 127.0.0.1) can reach the management
+# API. A real deployment must scope this to the actual management network
+# -- see docs/DEPLOYMENT.md and docs/API.md's auth/CIDR sections.
+management_cidrs = ["0.0.0.0/0", "::/0"]
+
+[enforcement]
+# Defaults restated explicitly (not silently relied upon) -- see CLAUDE.md.
+mode = "shadow"
+failure_mode = "fail_open"
+
+[detection]
+paranoia_level = 1
