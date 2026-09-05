@@ -139,3 +139,77 @@ window) — **`queue_growth_detected: false`**.
 - Rerun both scripts and update this document if signature count, scoring
   config, or the pipeline's hot path changes materially — a stale number
   here is worse than no number.
+
+## Post-hardening re-measurement (Step A3) — 2026-09-05
+
+Re-run after Phase A (prompts/13b's `PreAcceptTlsServer` — not exercised by
+this benchmark, which drives the pipeline via a raw ASGI scope, not a real
+TLS listener) and Phase B (SSRF signature category — 3 new PL1 rules,
+`WAFFY-SSRF-001/002/003`; the 4th, `WAFFY-SSRF-004`, is PL2-gated and never
+runs at this benchmark's PL1 default; plus fuzz-test/doc-only changes with
+no runtime code path) — **same reference hardware as the original baseline
+above, confirmed via `nproc`/`/proc/cpuinfo` before this run: identical
+12th Gen i7-12700F / 20 logical processors / 15 GiB RAM / WSL2 Ubuntu /
+CPython 3.14.4 machine, not a different environment.**
+
+### Latency
+
+```json
+{
+  "timestamp_utc": "2026-09-05T00:18:17.266966+00:00",
+  "request_body_size_bytes": 148,
+  "warmup_requests": 200,
+  "measured_requests": 2000,
+  "latency_ms": {"min": 0.1254, "p50": 0.1393, "p95": 0.2071, "p99": 0.2902, "max": 8.961, "mean": 0.1558, "stdev": 0.2048}
+}
+```
+A second run: `p99: 0.3085 ms` (`min: 0.12, p50: 0.1297, p95: 0.174, mean: 0.1451`).
+
+| | Baseline (2026-09-02) | Post-hardening (2026-09-05), 2 runs |
+|---|---|---|
+| p99 | 0.34 ms | 0.29 ms, 0.31 ms |
+
+**No latency regression** — both post-hardening p99 values are at or
+slightly below the original baseline, well within normal run-to-run
+variance for a sub-millisecond in-process measurement.
+
+### Throughput
+
+Three consecutive runs (same command, same machine, back-to-back):
+
+| Run | total_requests_completed | requests_per_second |
+|---|---|---|
+| 1 | 34,348 | 6,869.42 |
+| 2 | 32,223 | 6,444.39 |
+| 3 | 31,911 | 6,382.2 (5.0002s actual) |
+| **Average** | | **~6,565** |
+
+| | Baseline (2026-09-02) | Post-hardening (2026-09-05) |
+|---|---|---|
+| Throughput | ~7,325 req/sec | ~6,565 req/sec avg (range 6,382–6,869) |
+| Delta | | **~10% lower** |
+
+`queue_growth_detected: false` on all three runs — no backpressure/pileup
+signature, just a lower flat-line rate than the baseline.
+
+**Honest assessment**: this is a real, measured throughput decrease, not
+within the ~7% run-to-run spread observed among the three post-hardening
+runs themselves (6,382–6,869) alone — the average sits consistently below
+the baseline across all three. The most plausible, verifiable contributing
+factor is the added signature-matching cost: the seed rule set grew from
+12 rules to 15 rules actually evaluated at PL1 (the benchmarked default) —
+`WAFFY-SSRF-001/002/003` added three more regex checks against
+query_params/body_fields/raw_body per request, a ~25% increase in PL1 rule
+count, on a workstation shared with the rest of this session's other
+activity (unlike the original baseline's dedicated run). This is reported
+as measured, not fabricated or smoothed over, per this step's constraint —
+and, also per this step's constraint, **no code was modified to chase the
+number back up**; if the ~10% throughput cost of the new SSRF category
+matters for a specific deployment's capacity planning, that's a decision
+for the operator (e.g. running at a lower paranoia level, or accepting the
+cost — SSRF detection was a correctness gap, not optional polish), not
+something to silently re-tune here.
+
+No ML-anomaly-scorer-enabled run was added in this step — still an
+existing, separately-tracked follow-up item, unchanged from the original
+baseline's caveat above.
