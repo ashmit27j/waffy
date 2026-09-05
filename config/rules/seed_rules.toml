@@ -131,6 +131,68 @@ references = ["CWE-601"]
 enabled = true
 
 [[rules]]
+id = "WAFFY-SSRF-001"
+category = "ssrf"
+# Worst-case complexity: single alternation of literal/bounded-digit hostnames
+# with a required word boundary -- no nested quantifiers, linear in input length.
+pattern = '''(?i)\b(?:https?://)?(169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200)\b'''
+paranoia_level = 1
+target_fields = ["query_params", "body_fields", "raw_body"]
+score_weight = 35.0
+description = "SSRF - Cloud instance metadata endpoint targeting (AWS/Azure IMDS, GCP metadata hostname, Alibaba Cloud)"
+references = ["CWE-918", "OWASP-A10"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-SSRF-002"
+category = "ssrf"
+# Worst-case complexity: alternation of bounded-digit-group IP literals
+# (\d{1,3} bounded quantifiers only) behind a required URL-scheme prefix --
+# linear in input length, no backtracking-prone nesting.
+pattern = '''(?i)\b(?:https?|ftp|gopher|dict)://(127\.0\.0\.1|localhost|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b'''
+paranoia_level = 1
+target_fields = ["query_params", "body_fields", "raw_body"]
+score_weight = 25.0
+description = "SSRF - Loopback/RFC1918 internal-network targeting via an absolute URL-scheme parameter value"
+references = ["CWE-918", "OWASP-A10"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-SSRF-003"
+category = "ssrf"
+# Worst-case complexity: alternation of two literal schemes followed by a
+# bounded-exclusion character class ([^\s'"]+ excludes whitespace/quotes, so
+# it cannot re-scan across delimiter boundaries) -- linear in input length.
+# file:// is intentionally NOT duplicated here -- already covered by
+# WAFFY-LFIRFI-001 (see config/rules/seed_rules.toml's lfi_rfi rule).
+pattern = '''(?i)\b(gopher|dict)://[^\s'"]+'''
+paranoia_level = 1
+target_fields = ["query_params", "body_fields", "raw_body"]
+score_weight = 20.0
+description = "SSRF - Dangerous URL schemes (gopher/dict) enabling protocol smuggling via server-side fetch parameters"
+references = ["CWE-918"]
+enabled = true
+
+[[rules]]
+id = "WAFFY-SSRF-004"
+category = "ssrf"
+# Lower-confidence, PL2+ only: an SSRF-prone parameter *name* combined with
+# an absolute-URL-shaped *value* -- name alone is not a sufficient signal
+# (many legitimate apps use "redirect="/"callback=" benignly), so this is
+# deliberately a lower score_weight than WAFFY-SSRF-001..003's higher-
+# confidence value-only patterns. field_name_pattern is a fixed-alternation
+# anchored match (no backtracking risk); pattern is a bounded, anchored
+# scheme-prefix check.
+field_name_pattern = '''(?i)^(url|uri|callback|webhook|feed|target|dest|redirect|proxy)$'''
+pattern = '''(?i)^\s*https?://'''
+paranoia_level = 2
+target_fields = ["query_params", "body_fields"]
+score_weight = 8.0
+description = "SSRF - Fetch-prone parameter name (url/callback/webhook/etc.) holding an absolute URL value (PL2, lower-confidence heuristic)"
+references = ["CWE-918"]
+enabled = true
+
+[[rules]]
 id = "WAFFY-SCANNER-001"
 category = "scanner_fingerprint"
 pattern = '''(?i)\b(sqlmap|nikto|nuclei|w3af|acunetix|nessus|openvas|gobuster|dirbuster|metasploit|zaproxy|nmap)\b'''

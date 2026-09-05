@@ -32,6 +32,17 @@ class CompiledSignature:
         except re.error as e:
             raise ValueError(f"Invalid regex for signature {definition.id}: {e}") from e
 
+        self.field_name_regex: re.Pattern[str] | None = None
+        if definition.field_name_pattern is not None:
+            try:
+                self.field_name_regex = re.compile(
+                    definition.field_name_pattern, re.IGNORECASE
+                )
+            except re.error as e:
+                raise ValueError(
+                    f"Invalid field_name_pattern for signature {definition.id}: {e}"
+                ) from e
+
 
 class SignatureEngine:
     """Engine executing negative-security signature matches against HttpRequestRecords."""
@@ -151,6 +162,11 @@ class SignatureEngine:
 
             for tf, field_name, text in target_items:
                 if not text:
+                    continue
+
+                if comp_sig.field_name_regex is not None and (
+                    field_name is None or not comp_sig.field_name_regex.search(field_name)
+                ):
                     continue
 
                 m = comp_sig.regex.search(text)

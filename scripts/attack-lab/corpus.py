@@ -259,6 +259,49 @@ ATTACK_CORPUS: dict[SignatureCategory, list[AttackCase]] = {
             query_params={"url": ["//evil.example.com/steal"]},
         ),
     ],
+    SignatureCategory.SSRF: [
+        AttackCase(
+            name="aws_azure_metadata_ip",
+            category=SignatureCategory.SSRF,
+            path="/fetch",
+            query_params={"url": ["http://169.254.169.254/latest/meta-data/iam/security-credentials/"]},
+        ),
+        AttackCase(
+            name="gcp_metadata_hostname",
+            category=SignatureCategory.SSRF,
+            path="/fetch",
+            query_params={"target": ["http://metadata.google.internal/computeMetadata/v1/"]},
+        ),
+        AttackCase(
+            name="loopback_url_scheme",
+            category=SignatureCategory.SSRF,
+            path="/fetch",
+            query_params={"dest": ["http://127.0.0.1:6379/"]},
+        ),
+        AttackCase(
+            name="rfc1918_url_scheme",
+            category=SignatureCategory.SSRF,
+            path="/fetch",
+            query_params={"proxy": ["http://192.168.1.1/admin"]},
+        ),
+        AttackCase(
+            name="gopher_scheme_redis_smuggling",
+            category=SignatureCategory.SSRF,
+            path="/fetch",
+            query_params={"feed": ["gopher://127.0.0.1:6379/_SET%20key%20value"]},
+        ),
+        AttackCase(
+            # Deliberately NOT an internal/metadata IP -- this case only
+            # matches WAFFY-SSRF-004 (the PL2-gated name+value heuristic),
+            # not WAFFY-SSRF-001..003, so it distinctly exercises the
+            # lower-confidence paranoia-level-2 gating rather than
+            # overlapping with the other three rules.
+            name="webhook_param_name_absolute_url",
+            category=SignatureCategory.SSRF,
+            path="/register",
+            query_params={"webhook": ["http://attacker-controlled.example/notify"]},
+        ),
+    ],
     SignatureCategory.SCANNER_FINGERPRINT: [
         AttackCase(
             name="sqlmap_ua",

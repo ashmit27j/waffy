@@ -164,6 +164,82 @@ def test_signature_true_and_false_positives(seed_signatures: list[SignatureDefin
         for m in engine.match(benign_ssti, b"Alice and Bob")
     )
 
+    # 6. SSRF
+    attack_ssrf_metadata = HttpRequestRecord(
+        method=HttpMethod.GET,
+        path="/fetch",
+        query_string="url=http://169.254.169.254/latest/meta-data/",
+        query_params={"url": ["http://169.254.169.254/latest/meta-data/"]},
+        client_ip="1.2.3.4",
+    )
+    attack_ssrf_loopback = HttpRequestRecord(
+        method=HttpMethod.GET,
+        path="/fetch",
+        query_string="dest=http://127.0.0.1:6379/",
+        query_params={"dest": ["http://127.0.0.1:6379/"]},
+        client_ip="1.2.3.4",
+    )
+    # Note: an absolute URL under a heuristic param name like "url="/"webhook="
+    # is a deliberate (documented, PL2+-gated) low-confidence SSRF signal --
+    # see test_ssrf_param_name_heuristic_is_paranoia_gated_and_name_aware.
+    # This benign case uses a non-heuristic param name so it stays clean of
+    # WAFFY-SSRF-004 as well as the higher-confidence internal-target rules.
+    benign_ssrf = HttpRequestRecord(
+        method=HttpMethod.GET,
+        path="/fetch",
+        query_string="image=https://cdn.example.com/logo.png",
+        query_params={"image": ["https://cdn.example.com/logo.png"]},
+        client_ip="1.2.3.4",
+    )
+    assert any(m.category == SignatureCategory.SSRF for m in engine.match(attack_ssrf_metadata))
+    assert any(m.category == SignatureCategory.SSRF for m in engine.match(attack_ssrf_loopback))
+    assert not any(m.category == SignatureCategory.SSRF for m in engine.match(benign_ssrf))
+
+
+def test_ssrf_param_name_heuristic_is_paranoia_gated_and_name_aware(
+    seed_signatures: list[SignatureDefinition],
+) -> None:
+    """WAFFY-SSRF-004's field_name_pattern must combine BOTH the param name
+    and an absolute-URL value -- neither alone should trigger it -- and it
+    must stay off at PL1 (lower-confidence heuristic, PL2+ only)."""
+    engine_pl1 = SignatureEngine(seed_signatures, paranoia_level=ParanoiaLevel.PL1)
+    engine_pl2 = SignatureEngine(seed_signatures, paranoia_level=ParanoiaLevel.PL2)
+
+    name_and_value_match = HttpRequestRecord(
+        method=HttpMethod.GET,
+        path="/register",
+        query_string="webhook=http://attacker-controlled.example/notify",
+        query_params={"webhook": ["http://attacker-controlled.example/notify"]},
+        client_ip="1.2.3.4",
+    )
+    # Matching name, non-URL value -- must never trigger regardless of level.
+    name_only = HttpRequestRecord(
+        method=HttpMethod.GET,
+        path="/register",
+        query_string="webhook=not-a-url",
+        query_params={"webhook": ["not-a-url"]},
+        client_ip="1.2.3.4",
+    )
+    # URL value under a non-heuristic param name -- must never trigger
+    # WAFFY-SSRF-004 specifically (other SSRF rules are exempt from this
+    # assertion since they don't use field_name_pattern at all).
+    value_only = HttpRequestRecord(
+        method=HttpMethod.GET,
+        path="/register",
+        query_string="comment=http://attacker-controlled.example/notify",
+        query_params={"comment": ["http://attacker-controlled.example/notify"]},
+        client_ip="1.2.3.4",
+    )
+
+    assert not any(
+        m.category == SignatureCategory.SSRF for m in engine_pl1.match(name_and_value_match)
+    )
+    assert any(m.category == SignatureCategory.SSRF for m in engine_pl2.match(name_and_value_match))
+    assert not any(m.category == SignatureCategory.SSRF for m in engine_pl2.match(name_only))
+    assert not any(
+        m.signature_id == "WAFFY-SSRF-004" for m in engine_pl2.match(value_only)
+    )
+
 
 def test_paranoia_level_gating(seed_signatures: list[SignatureDefinition]) -> None:
     # PL1 engine should NOT trigger PL2 signature (open redirect)

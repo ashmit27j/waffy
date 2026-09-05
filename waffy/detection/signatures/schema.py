@@ -20,6 +20,14 @@ class SignatureDefinition(BaseModel):
     target_fields: list[TargetField] = Field(
         default_factory=lambda: [TargetField.PATH, TargetField.QUERY_PARAMS]
     )
+    # Optional: when set, `pattern` is only evaluated against a target item
+    # whose field/parameter *name* also matches this regex (e.g. a
+    # parameter-name heuristic like "url"/"webhook"/"redirect" combined with
+    # a value that looks like an absolute URL) -- lets a signature combine a
+    # weak name signal with a value signal instead of matching on either
+    # alone. `None` (default) preserves every existing signature's
+    # value-only matching behavior unchanged.
+    field_name_pattern: str | None = None
     score_weight: float = Field(default=5.0, ge=0.0)
     description: str = ""
     references: list[str] = Field(default_factory=lambda: list[str]())

@@ -47,6 +47,7 @@ enabled_categories = [
     "deserialization",
     "crlf_injection",
     "open_redirect",
+    "ssrf",
     "scanner_fingerprint"
 ]
 # Rules directory path

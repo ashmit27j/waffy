@@ -75,6 +75,7 @@ class SignatureCategory(StrEnum):
     DESERIALIZATION = "deserialization"
     CRLF_INJECTION = "crlf_injection"
     OPEN_REDIRECT = "open_redirect"
+    SSRF = "ssrf"
     SCANNER_FINGERPRINT = "scanner_fingerprint"
     VIRTUAL_PATCH = "virtual_patch"
     CUSTOM = "custom"

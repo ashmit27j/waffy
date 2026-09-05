@@ -369,3 +369,96 @@ surface at all yet): `http_limits`, `cookie_security`, `credential_stuffing`,
 and `csrf` have no corresponding section in `config/default_config.toml`, so
 they always load from Pydantic defaults regardless of what an operator might
 try to configure for them. None of this was touched by prompts/11.
+
+## SSRF signature detection (Step B1)
+
+**Gap this closes**: `docs/MASTER_SPEC.md` §1 lists SSRF as an in-scope
+attack class, but before this task no `ssrf` category existed anywhere —
+not in `SignatureCategory`, not in `config/rules/seed_rules.toml`, not in
+`config/default_config.toml`'s `enabled_categories`. This was a real
+detection gap, not just a labeling gap: an SSRF payload (e.g. a URL
+parameter pointed at `169.254.169.254`) would pass through the signature
+engine unflagged.
+
+**Four rules, deliberately split by confidence level** (`config/rules/seed_rules.toml`):
+
+- `WAFFY-SSRF-001` (PL1, weight 35): cloud instance metadata endpoint
+  targeting — `169.254.169.254` (AWS + Azure IMDS share this address),
+  `metadata.google.internal` (GCP's metadata hostname), `100.100.100.200`
+  (Alibaba Cloud). No legitimate application parameter value should ever
+  contain one of these, so this is the highest-confidence, highest-weight
+  SSRF rule and needs no scheme-prefix requirement.
+- `WAFFY-SSRF-002` (PL1, weight 25): loopback/RFC1918 internal-network
+  targeting, but *only* when it appears behind an absolute URL scheme
+  (`http(s)://`, `ftp://`, `gopher://`, `dict://`) — e.g.
+  `url=http://127.0.0.1:6379/`. Bare mentions of an RFC1918 address with no
+  scheme prefix are deliberately **not** matched by this rule: a bare
+  `192.168.1.5` appearing in a request body is plausibly legitimate
+  application data (e.g. a network-device-configuration UI), so requiring
+  URL-scheme context is a precision tradeoff, not an oversight.
+- `WAFFY-SSRF-003` (PL1, weight 20): dangerous `gopher://`/`dict://`
+  schemes, which enable protocol smuggling in server-side fetch parameters
+  (the classic Redis-via-gopher SSRF chain). `file://` is intentionally
+  **not** duplicated here — it's already covered by the existing
+  `WAFFY-LFIRFI-001` pattern; this rule only adds the two schemes LFI/RFI
+  didn't already cover.
+- `WAFFY-SSRF-004` (**PL2+ only**, weight 8 — lowest of the four): a
+  fetch-prone parameter *name* (`url`, `uri`, `callback`, `webhook`, `feed`,
+  `target`, `dest`, `redirect`, `proxy`) combined with a value that looks
+  like an absolute URL. Gated to PL2+ specifically because the spec called
+  out the false-positive risk directly: plenty of legitimate applications
+  have a `url=` or `redirect=` parameter that takes an absolute URL for
+  entirely benign reasons (an image CDN, a post-login redirect target).
+  Name alone is never sufficient — see the engine change below — and this
+  rule is the lowest-weight of the four precisely because it's the
+  lowest-confidence signal.
+
+**Engine change required to support rule 004** (`waffy/detection/signatures/schema.py`,
+`waffy/detection/signatures/engine.py`): before this task, `SignatureDefinition`
+had no way to condition a match on the parameter/field *name*, only its
+*value* — `SignatureEngine._extract_target_strings()` already produced
+`(target_field, field_name, value)` triples internally, but `field_name` was
+only ever attached to the resulting `SignatureMatch` for reporting, never
+consulted during matching. Added an optional `field_name_pattern: str | None`
+to `SignatureDefinition` (`None` by default — every pre-existing signature's
+behavior is unchanged); when set, `CompiledSignature` compiles it as a
+second regex, and `SignatureEngine.match()` skips a target item whose
+`field_name` doesn't match it before ever running the value regex. This is
+a small, additive, backward-compatible change (no existing rule sets it) that
+lets a signature combine a name signal with a value signal instead of
+approximating one alone with a single regex.
+
+**Measured results** (`uv run python scripts/attack-lab/run_corpus.py --report`,
+6 new SSRF payloads added to `scripts/attack-lab/corpus.py`: AWS/Azure
+metadata IP, GCP metadata hostname, loopback-with-scheme, RFC1918-with-scheme,
+gopher-scheme Redis smuggling, and a PL2-only param-name+URL case):
+
+| Level | SSRF TP rate | Benign FP rate |
+|---|---|---|
+| PL1 | 83.33% (5/6) — the PL2-gated case correctly does not fire | 0.00% (0/7), unchanged |
+| PL2 | 100.00% (6/6) | 0.00% (0/7), unchanged |
+| PL3 | 100.00% (6/6) | 0.00% (0/7), unchanged |
+| PL4 | 100.00% (6/6) | 0.00% (0/7), unchanged |
+
+The PL1→PL2 jump from 83.33% to 100.00% is by design — it is the
+`WAFFY-SSRF-004` gate turning on, exactly as the false-positive-avoidance
+constraint intended, not a bug being fixed between runs. No other
+category's true-positive or false-positive numbers changed as a result of
+this task (verified by re-running the full report, not just the SSRF row).
+
+**Unit test coverage** (`tests/unit/test_detection_engine.py`): SSRF
+true/false-positive cases added to the existing multi-category test, plus a
+dedicated `test_ssrf_param_name_heuristic_is_paranoia_gated_and_name_aware`
+proving `WAFFY-SSRF-004` requires *both* signals (name-match-only and
+value-match-only cases both must not trigger it) and stays off at PL1.
+
+**Scope not covered**: `enabled_categories`/`rules_dir` in
+`DetectionConfig` remain pre-existing, declared-but-unconsumed config
+fields (confirmed by grep — nothing in `waffy/detection/` reads either one;
+`load_all_rules_from_dir()` loads every `.toml` file in a directory
+unconditionally, with no category-based filtering at all). `"ssrf"` was
+added to `enabled_categories` in `config/default_config.toml` per this
+task's acceptance criteria, for documentation/future-wiring consistency
+with every other category already listed there, but this addition has the
+same no-op-today status as the other ten entries already in that list —
+not a new or SSRF-specific gap.
