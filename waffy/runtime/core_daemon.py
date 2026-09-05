@@ -22,9 +22,10 @@ On SIGTERM / SIGINT the daemon:
 sd_notify
 ---------
 ``sd_notify`` is called via the ``systemd`` Python package if available, or
-via a raw ``NOTIFY_SOCKET`` write.  The actual systemd unit file is built in
-Phase 9 (hardening/deployment); this phase provides the hooks the unit file
-will use.
+via a raw ``NOTIFY_SOCKET`` write.  The actual systemd unit file lives at
+``deploy/systemd/waffy-core.service``; this module provides the readiness
+(``READY=1``) and shutdown (drain, then ``STOPPING=1``) hooks that unit
+file's ``Type=notify`` directive depends on.
 
 If the ``systemd`` package is not installed (e.g., in development on macOS)
 the heartbeat is silently skipped — the process still works correctly.

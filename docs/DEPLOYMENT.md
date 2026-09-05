@@ -85,7 +85,7 @@ ipc_socket_path = "/run/waffy/core.sock"
 ### Starting
 
 ```bash
-# Production (via systemd — unit file built in Phase 9)
+# Production (via systemd — see deploy/systemd/waffy-core.service)
 systemctl start waffy-core
 
 # Development / manual
