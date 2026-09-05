@@ -43,6 +43,25 @@ open source project."
 - `docs/SECURITY.md` (waffy's own threat model / security posture) —
   previously linked from `README.md` but never actually created; written
   from `CLAUDE.md`'s architecture rules and already-documented findings.
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): ruff, pyright, and
+  pytest (with coverage) on `ubuntu-latest` across a Python 3.12/3.13
+  matrix, plus a `dependency-audit` job running `pip-audit`.
+- **`.github/dependabot.yml`**: weekly update PRs for the `pip` and
+  `github-actions` ecosystems.
+- **Test coverage measurement**: `pytest-cov` (dev-only), `[tool.coverage.*]`
+  in `pyproject.toml` with an 80% CI-enforced floor. Measured 82% at the
+  time of this step (see `docs/PROGRESS.md` for the current number, which
+  moved slightly once the new Docker entrypoint scripts below were added).
+- **Dockerfile + docker-compose.yml**: a multi-stage, non-root evaluation
+  stack (waffy-core + waffy-api + a trivial demo upstream app), verified
+  end-to-end against a real Docker daemon this session, including a real
+  SQL-injection payload producing a genuine, logged detection while still
+  respecting `SHADOW` mode. New `waffy/runtime/serve_core.py` /
+  `serve_api.py` entrypoints, explicitly scoped as Docker/eval-only (the
+  production `core_daemon.py` still does not bind a real listener).
+- README badges (CI, license, Python version, coverage), a corrected
+  Quickstart config example, a runnable Docker "try it" snippet, and links
+  to `CONTRIBUTING.md`/`CODE_OF_CONDUCT.md`/`SECURITY.md`/`CHANGELOG.md`.
 
 ### Fixed
 
@@ -55,6 +74,29 @@ open source project."
 - Stale documentation cross-references claiming the systemd unit file "is
   built in Phase 9" — `deploy/systemd/waffy-core.service` already existed;
   both mentions now point at the real file.
+- README's Quickstart told operators to set a flat `enforcement_mode` key
+  in `config.toml` — the real schema is a nested `[enforcement]` section
+  with lowercase values (`"shadow"`/`"assisted"`/`"active"`).
+
+### Known issues found this session (not fixed — tracked openly)
+
+- **`WaffyPipelineApplication`'s observability outputs are wired to
+  nothing live.** The `event_sink` parameter and
+  `IpcStateStore.record_event`/`record_assessment` have no caller anywhere
+  connecting them to real pipeline traffic — confirmed by curling the
+  management API's `/api/v1/events`/`/api/v1/requests` endpoints
+  immediately after a real, logged SQLi detection in the Docker stack and
+  finding both empty. This means those feeds and any configured SIEM
+  `EventSink` currently receive nothing from a live-running pipeline.
+- The `ml` optional-dependency group is not actually optional at import
+  time — `waffy/http/pipeline.py` imports through to `joblib`
+  unconditionally at module scope.
+- `tests/integration/test_task13b_preaccept_ja3.py::test_capture_mode_post_handshake_skips_peek_uses_ssl_object_signal`
+  is flaky at a measured ~6.7% (1/15) failure rate — a real race in the
+  `capture_mode="post_handshake"` fallback path, not host-load noise.
+- Throughput is measured ~10% below the original baseline (see Performance,
+  below), attributed to the larger PL1 rule count from the new SSRF
+  category.
 
 ### Performance
 
