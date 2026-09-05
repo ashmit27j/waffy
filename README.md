@@ -2,6 +2,8 @@
 
 ![waffy](Waffy-banner.png)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A standalone, per-host application-layer Web Application Firewall (WAF) built in Python. 
 
 waffy sits inline with HTTP(S) traffic to inspect requests/responses and detect or block web application attacks (SQLi, XSS, command injection, path traversal, SSRF, SSTI, XXE, bot abuse, etc.). It combines a deterministic signature engine, positive security constraints (allowlists), and machine learning anomaly detection to produce a combined threat score.
@@ -66,3 +68,7 @@ The recommended path to deploying waffy in production is a gradual escalation of
 - [Interoperability](docs/INTEROP.md) - Correlating events with pirewall in a SIEM.
 - [Project Summary](docs/PROJECT_SUMMARY.md) - Overview of current state and limitations.
 - [Implementation Progress](docs/PROGRESS.md) - Phase-by-phase tracking.
+
+## License
+
+waffy is licensed under the [MIT License](LICENSE).
