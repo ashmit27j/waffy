@@ -83,13 +83,6 @@ def parse_safe_xml(xml_bytes: bytes) -> dict[str, Any]:
 
 def parse_multipart_metadata(body: bytes, content_type_header: str) -> dict[str, Any]:
     """Extract metadata (field names, filenames, content-types, sizes) from multipart body."""
-    import email.message
-
-    # Construct minimal MIME container to parse headers
-    msg = email.message.EmailMessage()
-    msg["Content-Type"] = content_type_header
-    msg.set_payload(body)
-
     # Simple multipart extraction
     boundary_marker = ""
     for param in content_type_header.split(";"):

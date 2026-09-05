@@ -1,5 +1,6 @@
 """Unit and integration tests for Phase 2 HTTP engine, parser, body, and normalization."""
 
+import contextlib
 import gzip
 import importlib.util
 import json
@@ -8,17 +9,20 @@ from typing import Any
 
 import httpx
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 from starlette.requests import Request
 
 from tests.helpers.fakes import FakeUpstreamClient
 from waffy.config.models import HttpConfig, WaffyConfig
 from waffy.core.enums import HttpMethod
 from waffy.core.exceptions import RequestMalformedError
-from waffy.http.body import decompress_body, parse_body, parse_safe_xml
+from waffy.http.body import decompress_body, parse_body, parse_multipart_metadata, parse_safe_xml
 from waffy.http.normalize import (
     normalize_path_for_detection,
     normalize_percent_encoding,
     normalize_query_string,
+    normalize_text_nfkc,
 )
 from waffy.http.parser import parse_asgi_request, validate_request_framing
 from waffy.http.transport import ProxyApplication
@@ -318,3 +322,208 @@ async def test_http2_clean_request_parses_normally() -> None:
     assert record.method == HttpMethod.POST
     assert record.path == "/api/v1/submit"
     assert raw_body == body
+
+
+# ---------------------------------------------------------------------------
+# Property-based (Hypothesis) fuzz coverage for HTTP parsing & normalization
+# (Step B2)
+#
+# Every function fuzzed here handles 100% attacker-controlled input, per
+# CLAUDE.md. Table-driven tests above cover known evasion techniques; these
+# properties instead assert invariants that must hold for ANY input, so
+# Hypothesis can search for edge cases the table-driven tests don't
+# anticipate. dev-only dependency -- see docs/ARCHITECTURE.md's dependency
+# decisions section for the justification; hypothesis never ships in the
+# runtime dependency set (it's under [project.optional-dependencies].dev).
+#
+# Properties asserted:
+# 1. Normalization never crashes or hangs (bounded max_passes, bounded
+#    per-example wall-clock via Hypothesis's `deadline`).
+# 2. Normalization is idempotent once it has converged (stopped before
+#    hitting max_passes) -- re-running it on its own output is a no-op.
+# 3. The parser (validate_request_framing) and body layer (parse_body) never
+#    raise anything other than the documented RequestMalformedError -- they
+#    parse, or they raise that one typed exception, never an unhandled one.
+# 4. Decoding never produces output larger than the documented
+#    max_decompressed_body_bytes bound (the decompression-bomb guard).
+# ---------------------------------------------------------------------------
+
+
+@given(text=st.text(max_size=500), max_passes=st.integers(min_value=1, max_value=10))
+@settings(max_examples=200, deadline=1000, suppress_health_check=[HealthCheck.too_slow])
+def test_property_normalize_percent_encoding_never_crashes_and_bounded(
+    text: str, max_passes: int
+) -> None:
+    result, passes = normalize_percent_encoding(text, max_passes=max_passes)
+    assert isinstance(result, str)
+    assert 1 <= passes <= max_passes
+
+
+# Biased alphabet mixing percent-encoding syntax, hex digits, and control
+# characters -- more likely than plain st.text() to hit multi-pass decode
+# edge cases and null-byte/backslash interactions.
+_evasion_alphabet = st.sampled_from("%0123456789abcdefABCDEF./\\.. \x00\t\r\n<>'\";")
+
+
+@given(
+    text=st.text(alphabet=_evasion_alphabet, max_size=300),
+    max_passes=st.integers(min_value=1, max_value=8),
+)
+@settings(max_examples=300, deadline=1000, suppress_health_check=[HealthCheck.too_slow])
+def test_property_normalize_percent_encoding_idempotent_once_converged(
+    text: str, max_passes: int
+) -> None:
+    result, passes = normalize_percent_encoding(text, max_passes=max_passes)
+    if passes < max_passes:
+        # Loop exited via one of its own break conditions (no more '%', or a
+        # decode pass was a no-op) rather than hitting the cap -- re-running
+        # on the already-converged output must change nothing further.
+        result2, _ = normalize_percent_encoding(result, max_passes=max_passes)
+        assert result2 == result
+
+
+@given(text=st.text(max_size=300))
+@settings(max_examples=200, deadline=1000, suppress_health_check=[HealthCheck.too_slow])
+def test_property_normalize_query_string_never_crashes(text: str) -> None:
+    result, passes = normalize_query_string(text, max_passes=5)
+    assert isinstance(result, str)
+    assert "\x00" not in result
+    assert passes >= 1
+
+
+@given(text=st.text(max_size=300))
+@settings(max_examples=200, deadline=1000, suppress_health_check=[HealthCheck.too_slow])
+def test_property_normalize_path_for_detection_never_crashes(text: str) -> None:
+    result, passes = normalize_path_for_detection(text, max_passes=5)
+    assert isinstance(result, str)
+    assert "\x00" not in result
+    assert passes >= 1
+    assert result.startswith("/")
+
+
+@given(text=st.text(max_size=300))
+@settings(max_examples=200, deadline=1000, suppress_health_check=[HealthCheck.too_slow])
+def test_property_normalize_text_nfkc_never_crashes(text: str) -> None:
+    result, passes = normalize_text_nfkc(text, max_passes=5)
+    assert isinstance(result, str)
+    assert "\x00" not in result
+    assert passes >= 1
+
+
+@given(
+    headers=st.lists(
+        st.tuples(
+            st.binary(max_size=40).filter(lambda b: b"\n" not in b and b"\r" not in b),
+            st.binary(max_size=200).filter(lambda b: b"\n" not in b and b"\r" not in b),
+        ),
+        max_size=30,
+    )
+)
+@settings(max_examples=200, deadline=1000, suppress_health_check=[HealthCheck.too_slow])
+def test_property_validate_request_framing_never_raises_unexpected_exception(
+    headers: list[tuple[bytes, bytes]],
+) -> None:
+    """Either parses cleanly or raises the one documented RequestMalformedError
+    -- any other exception type propagating out of this test is the failure.
+    """
+    cfg = HttpConfig()
+    with contextlib.suppress(RequestMalformedError):
+        validate_request_framing(headers, cfg)
+
+
+def test_hypothesis_found_bug_multipart_content_type_with_crlf_no_longer_crashes() -> None:
+    """Regression test for a real bug Hypothesis found during Step B2:
+    parse_multipart_metadata() raised an unhandled `ValueError` (not the
+    documented RequestMalformedError) for a Content-Type header containing
+    a bare CR/LF, e.g. content_type='\\r0'. Root cause: the function built an
+    `email.message.EmailMessage()` purely to assign `msg["Content-Type"]`
+    for header validation, then never read `msg` again anywhere -- the
+    boundary marker was (and still is) parsed independently via
+    `content_type_header.split(";")`. That EmailMessage construction was
+    dead code, and it was also the only thing in this function that could
+    raise a non-RequestMalformedError exception. Fixed by deleting the
+    unused EmailMessage entirely (waffy/http/body.py) rather than adding a
+    try/except around code that had no purpose.
+    """
+    result = parse_multipart_metadata(b"", "\r0")
+    assert result == {"raw_parts": 0}
+
+    result2 = parse_multipart_metadata(b"data", "multipart/form-data\r\nboundary=x")
+    assert isinstance(result2, dict)
+
+
+@given(body=st.binary(max_size=2000), content_type=st.text(max_size=100))
+@settings(max_examples=200, deadline=1000, suppress_health_check=[HealthCheck.too_slow])
+def test_property_parse_multipart_metadata_never_raises_unexpected_exception(
+    body: bytes, content_type: str
+) -> None:
+    """Direct fuzz of parse_multipart_metadata() itself (not just through
+    parse_body()'s generic exception wrapper) -- it's independently exported
+    public API (waffy.http.__all__), so its own contract must hold: parse,
+    or raise RequestMalformedError, never anything else.
+    """
+    try:
+        result = parse_multipart_metadata(body, content_type)
+    except RequestMalformedError:
+        return
+    assert isinstance(result, dict)
+
+
+@given(
+    body=st.binary(max_size=2000),
+    content_type=st.one_of(
+        st.sampled_from(
+            [
+                "application/json",
+                "application/x-www-form-urlencoded",
+                "multipart/form-data; boundary=X",
+                "application/xml",
+                "text/xml",
+                "text/plain",
+                "",
+            ]
+        ),
+        st.text(max_size=40),
+    ),
+    content_encoding=st.one_of(
+        st.sampled_from(["", "gzip", "deflate", "zlib", "identity", "br"]),
+        st.text(max_size=20),
+    ),
+)
+@settings(max_examples=300, deadline=1000, suppress_health_check=[HealthCheck.too_slow])
+def test_property_parse_body_never_raises_unexpected_exception_and_respects_bound(
+    body: bytes, content_type: str, content_encoding: str
+) -> None:
+    """parse_body() must either succeed (bytes + dict, within the
+    configured decompressed-size bound) or raise RequestMalformedError --
+    never any other exception, and never a silently oversized result.
+    """
+    cfg = HttpConfig()
+    try:
+        decompressed, summary = parse_body(body, content_type, content_encoding, cfg)
+    except RequestMalformedError:
+        return
+    assert isinstance(decompressed, bytes)
+    assert isinstance(summary, dict)
+    assert len(decompressed) <= cfg.max_decompressed_body_bytes
+
+
+@given(size_multiplier=st.integers(min_value=1, max_value=500))
+@settings(max_examples=80, deadline=2000, suppress_health_check=[HealthCheck.too_slow])
+def test_property_decompression_bomb_guard_never_exceeds_configured_bound(
+    size_multiplier: int,
+) -> None:
+    """Tries to violate the decompression-bomb guard across a wide range of
+    decompressed sizes -- for every size, the guard must either reject the
+    payload outright or the actual decompressed output must stay within the
+    configured bound. Never a silent, unbounded expansion.
+    """
+    cfg = HttpConfig(max_decompressed_body_bytes=10_000, max_decompression_ratio=5.0)
+    raw = b"A" * (size_multiplier * 1000)  # up to ~500,000 decompressed bytes
+    compressed = gzip.compress(raw)
+
+    try:
+        result = decompress_body(compressed, "gzip", cfg)
+    except RequestMalformedError:
+        return  # guard correctly rejected an oversized/high-ratio payload
+    assert len(result) <= cfg.max_decompressed_body_bytes

@@ -75,6 +75,77 @@ completely unchanged — this was a storage-backend swap only.
 
 ## Dependency decisions
 
+### Step B2 — `hypothesis` added as a dev-only dependency
+
+**Decision**: `hypothesis>=6.100.0` added to `pyproject.toml`'s
+`[project.optional-dependencies].dev` group only — it is **not** a runtime
+dependency and never ships with the deployed `waffy-core`/`waffy-api`
+processes. It's used exclusively by `tests/unit/test_http_engine.py`'s
+property-based fuzz tests.
+
+**Why**: `waffy/http/parser.py`, `waffy/http/normalize.py`, and
+`waffy/http/body.py` all handle 100% attacker-controlled input per
+`CLAUDE.md`, but before this step only had table-driven tests against known
+evasion techniques — no generative coverage searching for edge cases the
+table didn't anticipate. Hypothesis is the standard Python property-based
+testing library for exactly this job (input-space search plus automatic
+shrinking to a minimal failing example) and is widely used in security-
+sensitive Python parsers for this reason.
+
+**Justification for the dependency addition itself**: dev/test-only tooling
+carries far less risk than a runtime dependency (per `CLAUDE.md`'s "ask
+first" rule, which is squarely aimed at things that ship in the request
+path) — it never touches a deployed process or the request path, and adding
+it follows the same precedent as `pytest`/`pytest-asyncio`/`ruff`/`pyright`
+already being dev-only entries in the same `[project.optional-dependencies].dev`
+group.
+
+**What it found**: a real bug, on the first property-based run against
+`parse_multipart_metadata()` — see "Bug found by Hypothesis in Step B2"
+below.
+
+### Bug found by Hypothesis in Step B2 — `parse_multipart_metadata` raised an unhandled `ValueError`
+
+**Finding**: `waffy/http/body.py::parse_multipart_metadata()` raised a raw
+stdlib `ValueError` ("Header values may not contain linefeed or carriage
+return characters") for any `content_type_header` containing a bare CR or
+LF character — e.g. Hypothesis's minimal failing example was
+`content_type='\r0'`. Every sibling function in the same file
+(`decompress_body`, `parse_safe_xml`) follows the "return safely or raise
+the one documented `RequestMalformedError`" contract; this function was the
+one exception (literally).
+
+**Root cause**: the function constructed an `email.message.EmailMessage()`
+purely to do `msg["Content-Type"] = content_type_header` — Python's
+`email.policy` header-store validation rejects embedded CR/LF and raises
+`ValueError`. Reading the rest of the function showed `msg` was **never
+referenced again after that assignment** — the actual boundary-marker
+extraction below it parses `content_type_header.split(";")` independently.
+The `EmailMessage` construction was dead code, and it was also the only
+source of a non-`RequestMalformedError` exception in the function.
+
+**Fix**: deleted the unused `EmailMessage` construction entirely (3 lines,
+`waffy/http/body.py`) rather than wrapping dead code in a defensive
+try/except. This is a strict simplification — no behavior the function
+actually used was removed, and the CR/LF-input case that used to crash now
+returns cleanly (or falls into the existing `{"raw_parts": len(body)}`
+no-boundary-found path, exactly like any other content-type with no
+`boundary=` parameter).
+
+**Practical exposure before the fix**: `parse_multipart_metadata` is
+exported as public API (`waffy.http.__all__`) but in production is only
+ever called from inside `parse_body()`'s own `try/except Exception` block,
+which would have caught and correctly re-raised this as
+`RequestMalformedError` anyway — so the fix closes a genuine contract
+violation in a public function (and a real crash for anyone calling it
+directly, e.g. a future caller or a test), not a live unhandled-exception
+path through the normal request pipeline. Confirmed by re-running the
+original 5,000-example failing case (now passes) plus a new fuzz test
+(`test_property_parse_multipart_metadata_never_raises_unexpected_exception`)
+and a direct regression test
+(`test_hypothesis_found_bug_multipart_content_type_with_crlf_no_longer_crashes`),
+both in `tests/unit/test_http_engine.py`.
+
 ### prompts/04 — JA3/JA4 TLS fingerprint extraction: no new dependency added
 
 **Decision**: real TLS ClientHello fingerprinting (`waffy/proxy/tls_fingerprint.py`)
